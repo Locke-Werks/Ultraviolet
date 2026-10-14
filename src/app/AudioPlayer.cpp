@@ -209,4 +209,8 @@ void AudioPlayer::stop() {
 
 bool AudioPlayer::isPlaying() const { return playing_; }
 
+double AudioPlayer::positionSeconds() const {
+    return (playing_ && sink_) ? static_cast<double>(sink_->processedUSecs()) / 1e6 : 0.0;
+}
+
 } // namespace uv::app

@@ -286,4 +286,122 @@ SpectrumCurve computeSpectrumCurve(const AudioBuffer& buffer, int fftSize) {
     return c;
 }
 
+Spectrogram computeSpectrogram(const AudioBuffer& buffer, int maxCols, int rows) {
+    Spectrogram s;
+    s.sampleRate = buffer.sampleRate;
+    if (buffer.empty() || buffer.sampleRate <= 0.0 || maxCols < 1 || rows < 2) return s;
+
+    const double sampleRate = buffer.sampleRate;
+    const std::size_t frames = buffer.frames();
+    const int channels = buffer.channelCount();
+    std::vector<double> mono(frames, 0.0);
+    for (int ch = 0; ch < channels; ++ch) {
+        const auto& src = buffer.channels[ch];
+        const std::size_t n = std::min(frames, src.size());
+        for (std::size_t i = 0; i < n; ++i) mono[i] += src[i];
+    }
+    if (channels > 1) {
+        const double inv = 1.0 / static_cast<double>(channels);
+        for (auto& v : mono) v *= inv;
+    }
+
+    // Scaling the FFT with the rate keeps Hz per bin constant, so a source and
+    // its upsampled output show the same detail in the shared band.
+    int fftSize = 4096;
+    while (static_cast<double>(fftSize) * 48000.0 < 4096.0 * sampleRate) fftSize *= 2;
+    const int numBins = fftSize / 2 + 1;
+    const std::size_t fft = static_cast<std::size_t>(fftSize);
+
+    std::size_t available = 1;
+    if (frames > fft) available = (frames - fft) / (fft / 2) + 1;
+    const int cols = static_cast<int>(std::max<std::size_t>(
+        1, std::min<std::size_t>(static_cast<std::size_t>(maxCols), available)));
+    std::size_t hop = 0;
+    if (frames > fft && cols > 1) {
+        hop = std::max<std::size_t>(1, (frames - fft) / static_cast<std::size_t>(cols - 1));
+    }
+
+    const double minHz = 20.0;
+    const double maxHz = sampleRate * 0.5;
+    const double binHz = sampleRate / fftSize;
+
+    // Per-row bin span for peak-hold. Rows narrower than a bin get no span and
+    // fall back to interpolation at the row's geometric centre.
+    std::vector<int> rowLo(rows), rowHi(rows);
+    std::vector<double> rowPos(rows);
+    const double ratio = maxHz / minHz;
+    for (int r = 0; r < rows; ++r) {
+        const double fLo = minHz * std::pow(ratio, static_cast<double>(r) / rows);
+        const double fHi = minHz * std::pow(ratio, static_cast<double>(r + 1) / rows);
+        int lo = static_cast<int>(std::ceil(fLo / binHz));
+        int hi = static_cast<int>(std::ceil(fHi / binHz)) - 1;
+        if (r == rows - 1) hi = numBins - 1; // include Nyquist bin
+        lo = std::max(lo, 1);
+        hi = std::min(hi, numBins - 1);
+        rowLo[r] = lo;
+        rowHi[r] = hi;
+        rowPos[r] = std::sqrt(fLo * fHi) / binHz;
+    }
+
+    std::vector<double> window(fftSize);
+    double windowSum = 0.0;
+    for (int n = 0; n < fftSize; ++n) {
+        window[n] = 0.5 * (1.0 - std::cos(2.0 * kPi * n / (fftSize - 1)));
+        windowSum += window[n];
+    }
+    const double scale = 2.0 / windowSum;
+    const double powScale = scale * scale;
+
+    double* in = fftw_alloc_real(fftSize);
+    fftw_complex* out = fftw_alloc_complex(numBins);
+    fftw_plan plan = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(planMutex());
+        plan = fftw_plan_dft_r2c_1d(fftSize, in, out, FFTW_ESTIMATE);
+    }
+
+    s.db.assign(static_cast<std::size_t>(rows) * cols, -200.0f);
+    std::vector<double> power(numBins);
+    for (int c = 0; c < cols; ++c) {
+        const std::size_t start = static_cast<std::size_t>(c) * hop;
+        for (int n = 0; n < fftSize; ++n) {
+            const std::size_t idx = start + static_cast<std::size_t>(n);
+            in[n] = (idx < frames ? mono[idx] : 0.0) * window[n];
+        }
+        fftw_execute(plan);
+        for (int k = 0; k < numBins; ++k) {
+            power[k] = (out[k][0] * out[k][0] + out[k][1] * out[k][1]) * powScale;
+        }
+        for (int r = 0; r < rows; ++r) {
+            double p = 0.0;
+            if (rowLo[r] <= rowHi[r]) {
+                for (int k = rowLo[r]; k <= rowHi[r]; ++k) p = std::max(p, power[k]);
+            } else {
+                const double pos = std::clamp(rowPos[r], 0.0, static_cast<double>(numBins - 1));
+                const int k0 = static_cast<int>(std::floor(pos));
+                const int k1 = std::min(k0 + 1, numBins - 1);
+                const double t = pos - k0;
+                p = power[k0] * (1.0 - t) + power[k1] * t;
+            }
+            const double db = p > 0.0 ? 10.0 * std::log10(p) : -200.0;
+            s.db[static_cast<std::size_t>(r) * cols + c] =
+                static_cast<float>(std::max(db, -200.0));
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(planMutex());
+        fftw_destroy_plan(plan);
+    }
+    fftw_free(in);
+    fftw_free(out);
+
+    s.durationSeconds = static_cast<double>(frames) / sampleRate;
+    s.minHz = minHz;
+    s.maxHz = maxHz;
+    s.cols = cols;
+    s.rows = rows;
+    return s;
+}
+
 } // namespace uv

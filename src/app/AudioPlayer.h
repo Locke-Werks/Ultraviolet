@@ -25,6 +25,10 @@ public:
     void stop();
     bool isPlaying() const;
 
+    // Seconds of audio handed to the device since play(). Leads what is heard
+    // by the device buffer (tens of ms), which is fine for a display playhead.
+    double positionSeconds() const;
+
 signals:
     void started();
     void stopped();

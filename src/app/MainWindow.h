@@ -17,10 +17,12 @@ class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QTimer;
 
 namespace uv::app {
 
 class AudioPlayer;
+class SpectrogramView;
 class SpectrumPlot;
 
 // Preview-first upscaler window. Selecting a file loads it and shows its
@@ -73,6 +75,9 @@ private:
         std::optional<uv::SpectrumInfo> info;
         std::optional<uv::SpectrumCurve> sourceCurve;
         std::optional<uv::SpectrumCurve> processedCurve;
+        // A few megabytes each (bounded columns and rows), so also kept.
+        std::optional<uv::Spectrogram> sourceSgram;
+        std::optional<uv::Spectrogram> processedSgram;
         uv::PipelineSettings appliedWith;
 
         // Monotonic tokens: a finished job whose token is stale is discarded.
@@ -106,12 +111,17 @@ private:
     void refreshView();
     void refreshControls();
     void setBusy(bool busy);
+    void updatePlayhead();
 
     std::vector<Entry> entries_; // parallel to table rows
     int nextId_ = 1;
 
     QTableWidget* table_ = nullptr;
     SpectrumPlot* plot_ = nullptr;
+    SpectrogramView* sourceView_ = nullptr;
+    SpectrogramView* processedView_ = nullptr;
+    QTimer* playheadTimer_ = nullptr;
+    enum class Playing { None, Original, Processed } playing_ = Playing::None;
     QLabel* infoLabel_ = nullptr;
     QLabel* hintLabel_ = nullptr;
     QComboBox* rateCombo_ = nullptr;

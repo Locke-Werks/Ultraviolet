@@ -29,4 +29,22 @@ struct SpectrumCurve {
 
 SpectrumCurve computeSpectrumCurve(const AudioBuffer& buffer, int fftSize = 8192);
 
+// Time-frequency magnitude for display. Rows are log-spaced from minHz to
+// maxHz (the buffer's Nyquist) so the high octaves, where this product works,
+// get as many rows as the low ones. Columns are bounded so a long file stays
+// a few megabytes. Same absolute dB scale as SpectrumCurve.
+struct Spectrogram {
+    double sampleRate = 0.0;
+    double durationSeconds = 0.0;
+    double minHz = 20.0;
+    double maxHz = 0.0;
+    int cols = 0;
+    int rows = 0;
+    // Row-major, rows * cols. Row 0 is minHz (the bottom of the image),
+    // column 0 is the start of the file.
+    std::vector<float> db;
+};
+
+Spectrogram computeSpectrogram(const AudioBuffer& buffer, int maxCols = 1600, int rows = 480);
+
 } // namespace uv

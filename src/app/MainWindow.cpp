@@ -2,6 +2,7 @@
 
 #include "AudioPlayer.h"
 #include "ProcessWorker.h"
+#include "SpectrogramView.h"
 #include "SpectrumPlot.h"
 
 #include "uvcore/AudioFile.h"
@@ -29,6 +30,7 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QThreadPool>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
@@ -101,12 +103,14 @@ struct LoadResult {
     std::shared_ptr<const uv::AudioBuffer> buffer;
     uv::SpectrumInfo info;
     uv::SpectrumCurve curve;
+    uv::Spectrogram sgram;
     QString error;
 };
 
 struct ApplyResult {
     std::shared_ptr<const uv::AudioBuffer> buffer; // null if cancelled
     uv::SpectrumCurve curve;
+    uv::Spectrogram sgram;
 };
 
 } // namespace
@@ -126,6 +130,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     });
 
     buildUi();
+
+    playheadTimer_ = new QTimer(this);
+    playheadTimer_->setInterval(33);
+    connect(playheadTimer_, &QTimer::timeout, this, &MainWindow::updatePlayhead);
+
     refreshView();
     refreshControls();
 }
@@ -174,8 +183,25 @@ void MainWindow::buildUi() {
     auto* viewLayout = new QVBoxLayout(viewPane);
     viewLayout->setContentsMargins(0, 0, 0, 0);
 
-    plot_ = new SpectrumPlot(viewPane);
-    viewLayout->addWidget(plot_, 1);
+    // Spectrum on top, source and processed spectrograms side by side below,
+    // in a splitter so either can be given more room.
+    auto* graphs = new QSplitter(Qt::Vertical, viewPane);
+    plot_ = new SpectrumPlot(graphs);
+    auto* sgramPane = new QWidget(graphs);
+    auto* sgramLayout = new QHBoxLayout(sgramPane);
+    sgramLayout->setContentsMargins(0, 0, 0, 0);
+    sgramLayout->setSpacing(6);
+    sourceView_ = new SpectrogramView(sgramPane);
+    sourceView_->setTitle(QStringLiteral("Source"));
+    processedView_ = new SpectrogramView(sgramPane);
+    processedView_->setTitle(QStringLiteral("Processed"));
+    sgramLayout->addWidget(sourceView_, 1);
+    sgramLayout->addWidget(processedView_, 1);
+    graphs->addWidget(plot_);
+    graphs->addWidget(sgramPane);
+    graphs->setStretchFactor(0, 3);
+    graphs->setStretchFactor(1, 2);
+    viewLayout->addWidget(graphs, 1);
 
     infoLabel_ = new QLabel(viewPane);
     infoLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -460,6 +486,7 @@ void MainWindow::startLoad(Entry& e) {
         }
         e->info = r.info;
         e->sourceCurve = std::move(r.curve);
+        e->sourceSgram = std::move(r.sgram);
         e->sourceBitDepth = r.buffer->sourceBitDepth;
         e->channels = r.buffer->channelCount();
         e->seconds = r.buffer->sampleRate > 0 ? r.buffer->frames() / r.buffer->sampleRate : 0.0;
@@ -487,6 +514,7 @@ void MainWindow::startLoad(Entry& e) {
         }
         r.info = uv::analyzeSpectrum(*buf);
         r.curve = displayCurve(*buf);
+        r.sgram = uv::computeSpectrogram(*buf);
         r.buffer = std::make_shared<const uv::AudioBuffer>(std::move(*buf));
         return r;
     }));
@@ -539,6 +567,7 @@ void MainWindow::startApply(Entry& e) {
         } else {
             e->appliedWith = settings;
             e->processedCurve = std::move(r.curve);
+            e->processedSgram = std::move(r.sgram);
             const Entry* sel = selectedEntry();
             if (sel && sel->id == id) e->processed = std::move(r.buffer);
             setRowStatus(id, QStringLiteral("Previewed"));
@@ -562,6 +591,7 @@ void MainWindow::startApply(Entry& e) {
         uv::AudioBuffer out = uv::processBuffer(*source, settings, &sink);
         if (out.empty()) return r;
         r.curve = displayCurve(out);
+        r.sgram = uv::computeSpectrogram(out);
         r.buffer = std::make_shared<const uv::AudioBuffer>(std::move(out));
         return r;
     }));
@@ -716,6 +746,10 @@ void MainWindow::onPlayOriginal() {
     if (e && e->source) {
         hintLabel_->setText(QStringLiteral("Playing original"));
         player_->play(*e->source);
+        if (player_->isPlaying()) {
+            playing_ = Playing::Original;
+            playheadTimer_->start();
+        }
     }
 }
 
@@ -724,12 +758,28 @@ void MainWindow::onPlayProcessed() {
     if (e && e->processed && previewValid(*e)) {
         hintLabel_->setText(QStringLiteral("Playing processed"));
         player_->play(*e->processed);
+        if (player_->isPlaying()) {
+            playing_ = Playing::Processed;
+            playheadTimer_->start();
+        }
     }
+}
+
+void MainWindow::updatePlayhead() {
+    const std::optional<double> t =
+        player_->isPlaying() ? std::optional<double>(player_->positionSeconds()) : std::nullopt;
+    // The playhead shows on the view of whichever version is being heard.
+    sourceView_->setPlayhead(playing_ == Playing::Original ? t : std::nullopt);
+    processedView_->setPlayhead(playing_ == Playing::Processed ? t : std::nullopt);
 }
 
 void MainWindow::onStopPlayback() { player_->stop(); }
 
 void MainWindow::onPlayerStopped() {
+    playheadTimer_->stop();
+    playing_ = Playing::None;
+    sourceView_->setPlayhead(std::nullopt);
+    processedView_->setPlayhead(std::nullopt);
     if (hintLabel_->text().startsWith(QLatin1String("Playing"))) hintLabel_->clear();
     refreshControls();
 }
@@ -742,6 +792,12 @@ void MainWindow::refreshView() {
         plot_->clearSource();
         plot_->clearProcessed();
         plot_->setMarkers({});
+        sourceView_->clear();
+        processedView_->clear();
+        sourceView_->setTitle(QStringLiteral("Source"));
+        processedView_->setTitle(QStringLiteral("Processed"));
+        sourceView_->setCutoffMarker(std::nullopt);
+        processedView_->setCutoffMarker(std::nullopt);
         infoLabel_->setText(entries_.empty() ? QStringLiteral("Add or drop audio files to begin.")
                                              : QStringLiteral("Select one file to preview it."));
         return;
@@ -779,6 +835,37 @@ void MainWindow::refreshView() {
     }
     plot_->setMarkers(std::move(markers));
     infoLabel_->setText(info);
+
+    // Spectrograms share one frequency axis so added content lines up, and
+    // the source view shows plainly how much range it is missing.
+    const bool pv = previewValid(*e);
+    double maxHz = e->sourceSgram ? e->sourceSgram->maxHz : 24000.0;
+    if (pv && e->processedSgram) maxHz = std::max(maxHz, e->processedSgram->maxHz);
+    sourceView_->setDisplayMaxHz(maxHz);
+    processedView_->setDisplayMaxHz(maxHz);
+
+    if (e->sourceSgram) {
+        sourceView_->setData(*e->sourceSgram);
+        sourceView_->setTitle(QStringLiteral("Source  ") + kHz(e->sourceSgram->sampleRate));
+    } else {
+        sourceView_->clear();
+        sourceView_->setTitle(QStringLiteral("Source"));
+    }
+    if (pv && e->processedSgram) {
+        processedView_->setData(*e->processedSgram);
+        processedView_->setTitle(QStringLiteral("Processed  ") + kHz(e->processedSgram->sampleRate));
+    } else {
+        processedView_->clear();
+        processedView_->setTitle(QStringLiteral("Processed"));
+    }
+
+    std::optional<double> cutoff;
+    if (e->info && e->sourceCurve && e->info->cutoffHz > 0 &&
+        e->info->cutoffHz < e->sourceCurve->sampleRate * 0.5 * 0.99) {
+        cutoff = e->info->cutoffHz;
+    }
+    sourceView_->setCutoffMarker(cutoff);
+    processedView_->setCutoffMarker(cutoff);
 
     if (e->processedCurve && !previewValid(*e) && !busy_) {
         hintLabel_->setText(QStringLiteral("Settings changed: press Apply to preview."));

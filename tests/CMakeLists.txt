@@ -9,6 +9,7 @@ add_executable(uvtests
     test_hfsynth.cpp
     test_pipeline.cpp
     test_processing.cpp
+    test_spectrogram.cpp
 )
 
 target_link_libraries(uvtests PRIVATE
