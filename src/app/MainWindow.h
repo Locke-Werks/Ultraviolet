@@ -129,6 +129,8 @@ private:
     QComboBox* modeCombo_ = nullptr;
     QSlider* hfSlider_ = nullptr;
     QLabel* hfValueLabel_ = nullptr;
+    QSlider* rolloffSlider_ = nullptr;
+    QLabel* rolloffValueLabel_ = nullptr;
     QCheckBox* ultrasonicCheck_ = nullptr;
     QLineEdit* outputFolderEdit_ = nullptr;
     QPushButton* addButton_ = nullptr;

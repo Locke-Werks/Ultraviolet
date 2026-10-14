@@ -6,8 +6,10 @@
 
 #include "uvcore/AudioFile.h"
 #include "uvcore/Pipeline.h"
+#include "uvcore/Resampler.h"
 #include "uvcore/Types.h"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <system_error>
@@ -144,6 +146,9 @@ TEST_CASE("Rescue mode adds HF energy the source lacked", "[pipeline]") {
     uv::PipelineSettings rescue = base;
     rescue.mode = uv::PipelineSettings::Mode::Rescue;
     rescue.hfStrength = 0.8;
+    // Ultrasonic on so the test holds whatever cutoff the detector reports:
+    // even the fallback (just under the source Nyquist) then has room to add.
+    rescue.ultrasonic = true;
     REQUIRE(uv::runPipeline(in.str(), outRescue.str(), rescue, nullptr, &err));
 
     auto m = uv::loadAudio(outMaster.str(), &err);
@@ -153,7 +158,31 @@ TEST_CASE("Rescue mode adds HF energy the source lacked", "[pipeline]") {
 
     // Above the 15 kHz source edge, Mastering has only resampler residue while
     // Rescue has synthesized content, so Rescue must carry more band energy.
-    const double mE = bandEnergy(m->channels[0], 192000.0, 15500.0, 19500.0);
-    const double rE = bandEnergy(r->channels[0], 192000.0, 15500.0, 19500.0);
+    // Goertzel over a 1 s file is slow per bin, so a 0.25 s slice is measured.
+    auto slice = [](const std::vector<uv::Sample>& v) {
+        return std::vector<uv::Sample>(v.begin() + 48000, v.begin() + 96000);
+    };
+    const double mE = bandEnergy(slice(m->channels[0]), 192000.0, 15500.0, 40000.0);
+    const double rE = bandEnergy(slice(r->channels[0]), 192000.0, 15500.0, 40000.0);
     REQUIRE(rE > mE * 5.0);
+}
+
+TEST_CASE("Mastering output equals a pure resample", "[pipeline]") {
+    const uv::AudioBuffer src = makeSource(24000);
+    uv::PipelineSettings s;
+    s.targetRate = 192000.0;
+    s.outputFormat = uv::OutputFormat::Float32;
+    s.mode = uv::PipelineSettings::Mode::Mastering;
+    s.hfStrength = 1.0;
+    s.ultrasonic = true;
+
+    const uv::AudioBuffer out = uv::processBuffer(src, s);
+    const uv::AudioBuffer ref = uv::resample(src, 192000.0);
+    REQUIRE(out.frames() == ref.frames());
+    REQUIRE(out.channelCount() == ref.channelCount());
+    double maxDiff = 0.0;
+    for (int ch = 0; ch < out.channelCount(); ++ch)
+        for (std::size_t i = 0; i < out.frames(); ++i)
+            maxDiff = std::max(maxDiff, std::abs(out.channels[ch][i] - ref.channels[ch][i]));
+    REQUIRE(maxDiff <= 1e-7);
 }

@@ -1,5 +1,7 @@
 #include "uvcore/SpectralAnalyzer.h"
 
+#include "FftwLock.h"
+
 #include <fftw3.h>
 
 #include <algorithm>
@@ -11,31 +13,75 @@ namespace uv {
 
 namespace {
 
-constexpr int kBlockSize = 4096;
-constexpr int kHop = kBlockSize / 2; // 50% overlap
-// Content must clear the noise floor by this margin to count as real signal.
-// A Hann main lobe puts a tone's skirt bins well above this, while leakage
-// valleys between tones fall back under it, so the detected edge tracks the
-// highest genuine spectral content.
-constexpr double kThresholdDb = 9.0;
-// Content also has to stay within this many dB of the strongest in-band bin.
-// For near-pure synthetic signals the true noise floor is far below any real
-// sidelobe, so a floor-relative test alone catches faint skirts hundreds of
-// Hz past the last tone; the peak-relative test pins the edge to the main lobe.
-constexpr double kContentDropDb = 40.0;
-constexpr int kPersist = 3;        // consecutive bins required to confirm content
-constexpr int kSmoothRadius = 2;   // moving-average radius for the dB curve
 constexpr double kPi = 3.14159265358979323846;
 
-// fftw planning and plan destruction are not thread-safe. The app analyzes
-// files concurrently, so every plan lifecycle call is serialized here.
+// Cutoff detection constants. Real music slopes downward by tens of dB across
+// the band, so nothing here is relative to the spectral peak: a cutoff is a
+// local cliff, judged against the source's own trend just below it.
+constexpr double kSearchMinHz = 4000.0;      // encoder and anti-alias cliffs live above this
+constexpr double kCliffDropDb = 25.0;        // minimum depth of a low-pass cliff
+constexpr double kCliffSpanOct = 0.125;      // a cliff happens within this span...
+constexpr double kCliffSpanMinHz = 1500.0;   // ...or this many Hz, whichever is larger
+constexpr double kFloorToleranceDb = 10.0;   // above the cliff the level must stay this close to the floor
+constexpr double kShoulderToleranceDb = 3.0; // shoulder = back within this of the trend
+constexpr double kSmoothOct = 1.0 / 24.0;    // fractional-octave smoothing width
+// Bins are clamped this far below the strongest bin. Pure tones leave leakage
+// valleys hundreds of dB deep that would otherwise read as cliffs or dominate
+// the floor median; any real floor sits well above this.
+constexpr double kDynamicRangeDb = 160.0;
+// A cliff whose shoulder sits this far under the strongest smoothed level is
+// a step in the noise floor (dither shelf, converter skirt below an earlier
+// low-pass), not the edge of program material.
+constexpr double kGenuineContentDb = 100.0;
+
+// fftw planning and plan destruction are not thread-safe, and FFTW's planner
+// state is global, so this must be the same lock the synthesizer uses or two
+// files analyzed and extended concurrently can plan at once.
 std::mutex& planMutex() {
-    static std::mutex m;
-    return m;
+    return detail::fftwPlanMutex();
 }
 
-double binFreq(int bin, double sampleRate) {
-    return static_cast<double>(bin) * sampleRate / static_cast<double>(kBlockSize);
+struct LineFit {
+    double slope = 0.0;
+    double intercept = 0.0;
+    bool ok = false;
+    double at(double x) const { return intercept + slope * x; }
+};
+
+// Least squares of dB against log2(f) over bins [lo, hi]. Refit twice without
+// points far below the line: sparse tonal material leaves valleys between
+// partials that would otherwise drag the trend down and tilt it, and the
+// shoulder is defined against the level of the content, not of the gaps.
+LineFit fitTrend(const std::vector<double>& db, double binHz, int lo, int hi) {
+    constexpr double kRejectBelowDb = 6.0;
+    LineFit fit;
+    lo = std::max(lo, 1);
+    hi = std::min(hi, static_cast<int>(db.size()) - 1);
+    for (int pass = 0; pass < 3; ++pass) {
+        double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+        int n = 0;
+        for (int k = lo; k <= hi; ++k) {
+            const double x = std::log2(k * binHz);
+            if (fit.ok && db[k] < fit.at(x) - kRejectBelowDb) continue;
+            sx += x; sy += db[k]; sxx += x * x; sxy += x * db[k];
+            ++n;
+        }
+        if (n < 2) break;
+        const double denom = n * sxx - sx * sx;
+        if (std::abs(denom) < 1e-12) break;
+        fit.slope = (n * sxy - sx * sy) / denom;
+        fit.intercept = (sy - fit.slope * sx) / n;
+        fit.ok = true;
+    }
+    return fit;
+}
+
+double medianOf(const std::vector<double>& v, int lo, int hi) {
+    if (hi < lo) return -200.0;
+    std::vector<double> tmp(v.begin() + lo, v.begin() + hi + 1);
+    auto mid = tmp.begin() + tmp.size() / 2;
+    std::nth_element(tmp.begin(), mid, tmp.end());
+    return *mid;
 }
 
 } // namespace
@@ -51,7 +97,6 @@ SpectrumInfo analyzeSpectrum(const AudioBuffer& buffer) {
         return info;
     }
 
-    // Downmix to mono by averaging channels.
     const std::size_t frames = buffer.frames();
     const int channels = buffer.channelCount();
     std::vector<double> mono(frames, 0.0);
@@ -67,45 +112,48 @@ SpectrumInfo analyzeSpectrum(const AudioBuffer& buffer) {
         for (auto& s : mono) s *= inv;
     }
 
-    const int numBins = kBlockSize / 2 + 1;
+    // Under 6 Hz per bin at any rate, so a few-hundred-Hz encoder skirt spans
+    // dozens of bins and the shoulder can be placed within a percent or so.
+    int fftSize = 8192;
+    while (static_cast<double>(fftSize) * 48000.0 < 8192.0 * sampleRate) fftSize *= 2;
+    const int numBins = fftSize / 2 + 1;
+    const std::size_t hop = static_cast<std::size_t>(fftSize / 2);
+    const double binHz = sampleRate / fftSize;
 
-    // Precompute the Hann window.
-    std::vector<double> window(kBlockSize);
-    for (int n = 0; n < kBlockSize; ++n) {
-        window[n] = 0.5 * (1.0 - std::cos(2.0 * kPi * n / (kBlockSize - 1)));
+    std::vector<double> window(fftSize);
+    double windowSum = 0.0;
+    for (int n = 0; n < fftSize; ++n) {
+        window[n] = 0.5 * (1.0 - std::cos(2.0 * kPi * n / (fftSize - 1)));
+        windowSum += window[n];
     }
 
-    double* in = fftw_alloc_real(kBlockSize);
+    double* in = fftw_alloc_real(fftSize);
     fftw_complex* out = fftw_alloc_complex(numBins);
-
     fftw_plan plan = nullptr;
     {
         std::lock_guard<std::mutex> lock(planMutex());
-        // FFTW_ESTIMATE leaves the input/output arrays untouched during
-        // planning, so the window data can be filled per block afterward.
-        plan = fftw_plan_dft_r2c_1d(kBlockSize, in, out, FFTW_ESTIMATE);
+        // FFTW_ESTIMATE leaves the arrays untouched during planning, so the
+        // windowed data can be filled per block afterward.
+        plan = fftw_plan_dft_r2c_1d(fftSize, in, out, FFTW_ESTIMATE);
     }
 
-    std::vector<double> magSum(numBins, 0.0);
-
-    // Number of overlapping blocks. Short input still yields one zero-padded block.
     std::size_t numBlocks = 1;
-    if (mono.size() > static_cast<std::size_t>(kBlockSize)) {
-        numBlocks = (mono.size() - kBlockSize) / kHop + 1;
+    if (mono.size() > static_cast<std::size_t>(fftSize)) {
+        numBlocks = (mono.size() - fftSize) / hop + 1;
     }
 
+    // Power, not magnitude: the long-term average then reflects energy, and
+    // a cliff's depth does not depend on how noisy individual blocks are.
+    std::vector<double> power(numBins, 0.0);
     for (std::size_t b = 0; b < numBlocks; ++b) {
-        const std::size_t start = b * kHop;
-        for (int n = 0; n < kBlockSize; ++n) {
+        const std::size_t start = b * hop;
+        for (int n = 0; n < fftSize; ++n) {
             const std::size_t idx = start + static_cast<std::size_t>(n);
-            const double sample = (idx < mono.size()) ? mono[idx] : 0.0;
-            in[n] = sample * window[n];
+            in[n] = (idx < mono.size() ? mono[idx] : 0.0) * window[n];
         }
         fftw_execute(plan);
         for (int k = 0; k < numBins; ++k) {
-            const double re = out[k][0];
-            const double im = out[k][1];
-            magSum[k] += std::sqrt(re * re + im * im);
+            power[k] += out[k][0] * out[k][0] + out[k][1] * out[k][1];
         }
     }
 
@@ -116,95 +164,124 @@ SpectrumInfo analyzeSpectrum(const AudioBuffer& buffer) {
     fftw_free(in);
     fftw_free(out);
 
-    const double invBlocks = 1.0 / static_cast<double>(numBlocks);
-    std::vector<double> magDb(numBins);
-    for (int k = 0; k < numBins; ++k) {
-        const double mag = magSum[k] * invBlocks;
-        magDb[k] = 20.0 * std::log10(mag + 1e-12);
+    // Same absolute scale as computeSpectrumCurve, so noiseFloorDb reads in
+    // dBFS-per-bin and is comparable with what the display shows.
+    const double scale = 2.0 / windowSum;
+    const double powScale = scale * scale / static_cast<double>(numBlocks);
+    double peakPow = 0.0;
+    for (int k = 1; k < numBins; ++k) {
+        power[k] *= powScale;
+        peakPow = std::max(peakPow, power[k]);
     }
+    const double minPow = std::max(peakPow * std::pow(10.0, -kDynamicRangeDb / 10.0), 1e-40);
+    for (int k = 0; k < numBins; ++k) power[k] = std::max(power[k], minPow);
 
-    // Smooth the dB curve to bridge single-bin dips before edge detection.
-    std::vector<double> smooth(numBins);
-    for (int k = 0; k < numBins; ++k) {
+    // Fractional-octave smoothing in the power domain. Averaging power rather
+    // than dB keeps an isolated tone from being diluted into its neighbours'
+    // leakage valleys. Summed directly: a prefix sum would cancel away the
+    // tiny values above a cliff against the huge ones below it.
+    const double halfWidth = std::pow(2.0, kSmoothOct * 0.5);
+    std::vector<double> sm(numBins, 10.0 * std::log10(minPow));
+    for (int k = 1; k < numBins; ++k) {
+        const double f = k * binHz;
+        int lo = static_cast<int>(std::ceil(f / halfWidth / binHz));
+        int hi = static_cast<int>(std::floor(f * halfWidth / binHz));
+        lo = std::clamp(lo, 1, k);
+        hi = std::clamp(hi, k, numBins - 1);
         double acc = 0.0;
-        int count = 0;
-        for (int d = -kSmoothRadius; d <= kSmoothRadius; ++d) {
-            const int j = k + d;
-            if (j >= 0 && j < numBins) {
-                acc += magDb[j];
-                ++count;
-            }
-        }
-        smooth[k] = acc / count;
+        for (int j = lo; j <= hi; ++j) acc += power[j];
+        sm[k] = 10.0 * std::log10(acc / (hi - lo + 1));
     }
 
-    // Noise floor: median magnitude across the top octave below Nyquist. The
-    // median is robust to the handful of tone bins that may sit in that range.
-    std::vector<double> topOctave;
-    for (int k = 1; k < numBins; ++k) {
-        const double f = binFreq(k, sampleRate);
-        if (f >= nyquist * 0.5 && f <= nyquist) {
-            topOctave.push_back(magDb[k]);
+    double peakSm = sm[1];
+    for (int k = 1; k < numBins; ++k) peakSm = std::max(peakSm, sm[k]);
+
+    const int lastBin = numBins - 1;
+    const int searchLo = std::max(2, static_cast<int>(std::ceil(kSearchMinHz / binHz)));
+
+    // Suffix max lets the "nothing comes back above the floor" test run in O(1).
+    std::vector<double> suffixMax(numBins + 1, -1e300);
+    for (int k = lastBin; k >= 0; --k) suffixMax[k] = std::max(suffixMax[k + 1], sm[k]);
+
+    auto spanBinsAt = [&](double f) {
+        const double spanHz = std::max(f * (std::pow(2.0, kCliffSpanOct) - 1.0), kCliffSpanMinHz);
+        return std::max(2, static_cast<int>(std::lround(spanHz / binHz)));
+    };
+
+    bool found = false;
+    int shoulderBin = lastBin;
+    int bottomBin = lastBin;
+    LineFit trend;
+
+    // Scan downward so the highest qualifying cliff wins: a source low-passed
+    // at 16 kHz and then anti-aliased at 21 kHz has its program edge at the
+    // cliff with real content on top, which the genuineness test separates.
+    int t = lastBin - 1;
+    while (t >= searchLo) {
+        const int span = spanBinsAt(t * binHz);
+        const int end = std::min(lastBin, t + span);
+        int bmin = t + 1;
+        for (int j = t + 1; j <= end; ++j) {
+            if (sm[j] < sm[bmin]) bmin = j;
         }
-    }
-    if (!topOctave.empty()) {
-        std::sort(topOctave.begin(), topOctave.end());
-        info.noiseFloorDb = topOctave[topOctave.size() / 2];
-    }
-
-    double peakDb = info.noiseFloorDb;
-    for (int k = 1; k < numBins; ++k) {
-        peakDb = std::max(peakDb, smooth[k]);
-    }
-    const double threshold =
-        std::max(info.noiseFloorDb + kThresholdDb, peakDb - kContentDropDb);
-
-    // Scan from Nyquist downward for the highest frequency where content stays
-    // persistently above the floor. The start of the first qualifying run (its
-    // highest bin) marks where real content ends.
-    double cutoffHz = 0.0;
-    int runCount = 0;
-    int runStartBin = numBins - 1;
-    for (int k = numBins - 1; k >= 1; --k) {
-        if (smooth[k] > threshold) {
-            if (runCount == 0) {
-                runStartBin = k;
-            }
-            ++runCount;
-            if (runCount >= kPersist) {
-                cutoffHz = binFreq(runStartBin, sampleRate);
-                break;
-            }
-        } else {
-            runCount = 0;
+        if (bmin > lastBin || sm[t] - sm[bmin] < kCliffDropDb) {
+            --t;
+            continue;
         }
-    }
-    info.cutoffHz = cutoffHz;
+        const double floorDb = medianOf(sm, bmin, lastBin);
+        const double ceiling = std::max(floorDb + kFloorToleranceDb, sm[bmin] + kShoulderToleranceDb);
+        if (bmin < lastBin && suffixMax[bmin + 1] > ceiling) {
+            --t;
+            continue;
+        }
 
-    // Spectral slope: least-squares fit of dB vs log2(freq) across the octave
-    // below the cutoff.
-    if (cutoffHz > 0.0) {
-        double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
-        int n = 0;
-        const double lo = cutoffHz * 0.5;
-        for (int k = 1; k < numBins; ++k) {
-            const double f = binFreq(k, sampleRate);
-            if (f >= lo && f <= cutoffHz) {
-                const double x = std::log2(f);
-                const double y = magDb[k];
-                sx += x; sy += y; sxx += x * x; sxy += x * y;
-                ++n;
+        // The steepest point anchors both the trend window (kept clear of the
+        // skirt) and the walk back up to the shoulder.
+        const int sLo = std::max(searchLo, t - span);
+        int steep = t;
+        double steepest = 0.0;
+        for (int k = std::max(sLo, 2); k <= bmin - 2 && k + 2 <= lastBin; ++k) {
+            const double d = sm[k + 2] - sm[k - 2];
+            if (d < steepest) {
+                steepest = d;
+                steep = k;
             }
         }
-        if (n >= 2) {
-            const double denom = n * sxx - sx * sx;
-            if (std::abs(denom) > 1e-12) {
-                info.slopeDbPerOct = (n * sxy - sx * sy) / denom;
-            }
+        const double fSteep = steep * binHz;
+        const int fitHi = static_cast<int>(std::floor(fSteep * std::pow(2.0, -kCliffSpanOct) / binHz));
+        const int fitLo = static_cast<int>(std::ceil(fSteep * 0.5 / binHz));
+        const LineFit fit = fitTrend(sm, binHz, fitLo, fitHi);
+
+        int k = steep;
+        if (fit.ok) {
+            while (k > fitLo && sm[k] < fit.at(std::log2(k * binHz)) - kShoulderToleranceDb) --k;
         }
+
+        if (sm[k] >= peakSm - kGenuineContentDb && sm[k] - floorDb >= kCliffDropDb) {
+            found = true;
+            shoulderBin = k;
+            bottomBin = bmin;
+            trend = fit;
+            break;
+        }
+        t = std::min(t, k) - 1;
     }
 
-    info.rolledOff = cutoffHz < 0.90 * nyquist;
+    if (found) {
+        info.cutoffHz = shoulderBin * binHz;
+        info.noiseFloorDb = medianOf(sm, bottomBin, lastBin);
+        info.slopeDbPerOct = trend.slope;
+    } else {
+        info.cutoffHz = nyquist;
+        const int topLo = static_cast<int>(std::ceil(nyquist * 0.5 / binHz));
+        info.noiseFloorDb = medianOf(sm, std::max(1, topLo), lastBin);
+        // Stop short of Nyquist, where the smoothing window is one-sided.
+        const int fitHi = static_cast<int>(std::floor(nyquist * 0.97 / binHz));
+        const LineFit fit = fitTrend(sm, binHz, topLo, fitHi);
+        if (fit.ok) info.slopeDbPerOct = fit.slope;
+    }
+
+    info.rolledOff = info.cutoffHz < 0.98 * nyquist;
     return info;
 }
 

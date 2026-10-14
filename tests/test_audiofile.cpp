@@ -5,6 +5,7 @@
 #include "uvcore/AudioFile.h"
 
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -116,6 +117,42 @@ TEST_CASE("Channel and frame counts are preserved", "[audiofile]") {
     REQUIRE(out.has_value());
     REQUIRE(out->channelCount() == in.channelCount());
     REQUIRE(out->frames() == in.frames());
+}
+
+TEST_CASE("Float64 at 384 kHz round-trips bit-exact", "[audiofile]") {
+    TempWav tmp("float64_384k");
+    const double sr = 384000.0;
+    uv::AudioBuffer in = makeStereo(sr, 4096);
+    // Values float32 cannot hold: only a true 64-bit write returns them intact.
+    in.channels[0][3] = 0.1;
+    in.channels[1][3] = 1.0 / 3.0;
+
+    std::string err;
+    REQUIRE(uv::saveAudio(tmp.str(), in, uv::OutputFormat::Float64, &err));
+    auto out = uv::loadAudio(tmp.str(), &err);
+    REQUIRE(out.has_value());
+    REQUIRE(out->sampleRate == sr);
+    REQUIRE(out->sourceBitDepth == 64);
+    for (int c = 0; c < 2; ++c) {
+        for (std::size_t i = 0; i < in.frames(); ++i) {
+            REQUIRE(out->channels[c][i] == in.channels[c][i]);
+        }
+    }
+}
+
+TEST_CASE("Small files are written as plain RIFF WAV", "[audiofile]") {
+    // RF64 is only needed past 4 GB; everything smaller must stay a
+    // standard WAV that any player opens.
+    TempWav tmp("riff_header");
+    std::string err;
+    REQUIRE(uv::saveAudio(tmp.str(), makeStereo(48000.0, 1000), uv::OutputFormat::Float64, &err));
+    std::FILE* f = std::fopen(tmp.str().c_str(), "rb");
+    REQUIRE(f != nullptr);
+    char magic[4] = {};
+    const std::size_t got = std::fread(magic, 1, 4, f);
+    std::fclose(f);
+    REQUIRE(got == 4);
+    REQUIRE(std::string(magic, 4) == "RIFF");
 }
 
 TEST_CASE("Nonexistent path fails and sets err", "[audiofile]") {

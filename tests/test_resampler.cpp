@@ -100,6 +100,27 @@ TEST_CASE("44.1k->192k has correct length and rate", "[resampler]") {
     REQUIRE(std::abs(20.0 * std::log10(outPeak / inPeak)) <= 0.5);
 }
 
+TEST_CASE("48k->384k (8x) preserves a 1 kHz sine", "[resampler]") {
+    const std::size_t inFrames = 24000;
+    uv::AudioBuffer in = makeSine(48000.0, inFrames, 1000.0, 1.0);
+    uv::AudioBuffer out = uv::resample(in, 384000.0);
+
+    REQUIRE(out.sampleRate == 384000.0);
+    REQUIRE(std::abs(static_cast<double>(out.frames()) - inFrames * 8.0) <= 8.0);
+    REQUIRE(std::abs(20.0 * std::log10(peak(out.channels[0]) / peak(in.channels[0]))) <= 0.5);
+    const double sig = goertzelMag(out.channels[0], 384000.0, 1000.0);
+    const double decoy = goertzelMag(out.channels[0], 384000.0, 5000.0);
+    REQUIRE(sig > 100.0 * decoy);
+}
+
+TEST_CASE("44.1k->352.8k (8x) has correct length", "[resampler]") {
+    const std::size_t inFrames = 22050;
+    uv::AudioBuffer in = makeSine(44100.0, inFrames, 1000.0, 0.5);
+    uv::AudioBuffer out = uv::resample(in, 352800.0);
+    REQUIRE(out.sampleRate == 352800.0);
+    REQUIRE(std::abs(static_cast<double>(out.frames()) - inFrames * 8.0) <= 8.0);
+}
+
 TEST_CASE("DC level is preserved", "[resampler]") {
     const std::size_t inFrames = 20000;
     uv::AudioBuffer in;

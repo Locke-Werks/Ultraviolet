@@ -95,6 +95,39 @@ TEST_CASE("processBuffer 48k to 192k Mastering matches runPipeline output", "[pr
     REQUIRE(maxDiff <= 1e-7);
 }
 
+TEST_CASE("processBuffer Rescue preview matches runPipeline output", "[processing]") {
+    // HF extension is in the path here, so this checks it is deterministic
+    // end to end: what the user previews is what gets saved.
+    const uv::AudioBuffer src = makeSine(48000.0, 9000.0, 0.5, 48000 / 4, 2);
+    TempFile in("uv_processing_resc_in.wav");
+    TempFile out("uv_processing_resc_out.wav");
+    REQUIRE(uv::saveAudio(in.str(), src, uv::OutputFormat::Float32));
+    auto reloaded = uv::loadAudio(in.str());
+    REQUIRE(reloaded);
+
+    uv::PipelineSettings s;
+    s.targetRate = 192000.0;
+    s.outputFormat = uv::OutputFormat::Float32;
+    s.mode = uv::PipelineSettings::Mode::Rescue;
+    s.hfStrength = 1.0;
+    s.ultrasonic = true;
+
+    const uv::AudioBuffer mem = uv::processBuffer(*reloaded, s);
+    std::string err;
+    REQUIRE(uv::runPipeline(in.str(), out.str(), s, nullptr, &err));
+    auto file = uv::loadAudio(out.str());
+    REQUIRE(file);
+    REQUIRE(file->frames() == mem.frames());
+    double maxDiff = 0.0;
+    for (int ch = 0; ch < mem.channelCount(); ++ch) {
+        for (std::size_t i = 0; i < mem.frames(); ++i) {
+            const double expected = static_cast<double>(static_cast<float>(mem.channels[ch][i]));
+            maxDiff = std::max(maxDiff, std::abs(file->channels[ch][i] - expected));
+        }
+    }
+    REQUIRE(maxDiff <= 1e-7);
+}
+
 TEST_CASE("processBuffer honours cancellation", "[processing]") {
     const uv::AudioBuffer src = makeSine(48000.0, 1000.0, 0.5, 4800, 1);
     uv::PipelineSettings s;

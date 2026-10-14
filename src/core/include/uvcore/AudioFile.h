@@ -8,8 +8,9 @@
 namespace uv {
 
 enum class OutputFormat {
-    Float32, // 32-bit IEEE float, full precision retained
+    Float32, // 32-bit IEEE float
     Pcm24,   // 24-bit PCM (requires dither/noise-shaping upstream)
+    Float64, // 64-bit IEEE float: the pipeline's internal precision, written as is
 };
 
 // Decode an audio file (WAV/FLAC/AIFF/...) into a planar double buffer.

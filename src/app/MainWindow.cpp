@@ -54,7 +54,8 @@ bool isSupportedAudio(const QString& path) {
 
 bool sameSettings(const uv::PipelineSettings& a, const uv::PipelineSettings& b) {
     return a.targetRate == b.targetRate && a.outputFormat == b.outputFormat &&
-           a.mode == b.mode && a.hfStrength == b.hfStrength && a.ultrasonic == b.ultrasonic;
+           a.mode == b.mode && a.hfStrength == b.hfStrength && a.ultrasonic == b.ultrasonic &&
+           a.rolloff == b.rolloff;
 }
 
 QString kHz(double hz) {
@@ -197,6 +198,8 @@ void MainWindow::buildUi() {
     processedView_->setTitle(QStringLiteral("Processed"));
     sgramLayout->addWidget(sourceView_, 1);
     sgramLayout->addWidget(processedView_, 1);
+    sourceView_->setLinearFrequency(true);
+    processedView_->setLinearFrequency(true);
     graphs->addWidget(plot_);
     graphs->addWidget(sgramPane);
     graphs->setStretchFactor(0, 3);
@@ -218,7 +221,15 @@ void MainWindow::buildUi() {
     transport->addWidget(stopButton_);
     transport->addSpacing(12);
     transport->addWidget(hintLabel_, 1);
+    auto* linearCheck = new QCheckBox(QStringLiteral("Linear spectrogram axis"), viewPane);
+    linearCheck->setChecked(true);
+    transport->addWidget(linearCheck);
     viewLayout->addLayout(transport);
+
+    connect(linearCheck, &QCheckBox::toggled, this, [this](bool on) {
+        sourceView_->setLinearFrequency(on);
+        processedView_->setLinearFrequency(on);
+    });
 
     split->addWidget(queuePane);
     split->addWidget(viewPane);
@@ -236,12 +247,15 @@ void MainWindow::buildUi() {
     rateCombo_->addItem(QStringLiteral("96 kHz"), 96000);
     rateCombo_->addItem(QStringLiteral("176.4 kHz"), 176400);
     rateCombo_->addItem(QStringLiteral("192 kHz"), 192000);
+    rateCombo_->addItem(QStringLiteral("352.8 kHz"), 352800);
+    rateCombo_->addItem(QStringLiteral("384 kHz"), 384000);
     rateCombo_->setCurrentIndex(3);
     form->addWidget(rateCombo_);
 
     form->addWidget(new QLabel(QStringLiteral("Output format"), settings));
     formatCombo_ = new QComboBox(settings);
     formatCombo_->addItem(QStringLiteral("32-bit float"), static_cast<int>(uv::OutputFormat::Float32));
+    formatCombo_->addItem(QStringLiteral("64-bit float"), static_cast<int>(uv::OutputFormat::Float64));
     formatCombo_->addItem(QStringLiteral("24-bit PCM"), static_cast<int>(uv::OutputFormat::Pcm24));
     form->addWidget(formatCombo_);
 
@@ -255,7 +269,9 @@ void MainWindow::buildUi() {
 
     auto* hfRow = new QHBoxLayout();
     hfRow->addWidget(new QLabel(QStringLiteral("HF strength"), settings));
-    hfValueLabel_ = new QLabel(QStringLiteral("50"), settings);
+    // 100 starts the synthesized band at exactly the source's level at the
+    // cutoff, which is what makes the blend seamless; lower values leave a step.
+    hfValueLabel_ = new QLabel(QStringLiteral("100"), settings);
     hfValueLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     hfRow->addStretch(1);
     hfRow->addWidget(hfValueLabel_);
@@ -263,10 +279,26 @@ void MainWindow::buildUi() {
 
     hfSlider_ = new QSlider(Qt::Horizontal, settings);
     hfSlider_->setRange(0, 100);
-    hfSlider_->setValue(50);
+    hfSlider_->setValue(100);
+    hfSlider_->setToolTip(QStringLiteral("Level of the extension at the cutoff. 100 continues the source seamlessly."));
     form->addWidget(hfSlider_);
 
-    ultrasonicCheck_ = new QCheckBox(QStringLiteral("Generate ultrasonic content"), settings);
+    auto* rolloffRow = new QHBoxLayout();
+    rolloffRow->addWidget(new QLabel(QStringLiteral("Rolloff (gentle to steep)"), settings));
+    rolloffValueLabel_ = new QLabel(QStringLiteral("50"), settings);
+    rolloffValueLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    rolloffRow->addStretch(1);
+    rolloffRow->addWidget(rolloffValueLabel_);
+    form->addLayout(rolloffRow);
+
+    rolloffSlider_ = new QSlider(Qt::Horizontal, settings);
+    rolloffSlider_->setRange(0, 100);
+    rolloffSlider_->setValue(50);
+    rolloffSlider_->setToolTip(QStringLiteral("How fast the extension decays above the source cutoff."));
+    form->addWidget(rolloffSlider_);
+
+    ultrasonicCheck_ = new QCheckBox(QStringLiteral("Extend into ultrasonic (fades out by 48 kHz)"), settings);
+    ultrasonicCheck_->setChecked(true);
     form->addWidget(ultrasonicCheck_);
 
     form->addSpacing(8);
@@ -317,6 +349,10 @@ void MainWindow::buildUi() {
     connect(formatCombo_, &QComboBox::currentIndexChanged, this, &MainWindow::onSettingsChanged);
     connect(modeCombo_, &QComboBox::currentIndexChanged, this, &MainWindow::onSettingsChanged);
     connect(hfSlider_, &QSlider::valueChanged, this, &MainWindow::onSettingsChanged);
+    connect(rolloffSlider_, &QSlider::valueChanged, this, [this](int v) {
+        rolloffValueLabel_->setText(QString::number(v));
+    });
+    connect(rolloffSlider_, &QSlider::valueChanged, this, &MainWindow::onSettingsChanged);
     connect(ultrasonicCheck_, &QCheckBox::toggled, this, &MainWindow::onSettingsChanged);
 }
 
@@ -408,6 +444,7 @@ uv::PipelineSettings MainWindow::currentSettings() const {
     s.outputFormat = static_cast<uv::OutputFormat>(formatCombo_->currentData().toInt());
     s.mode = static_cast<uv::PipelineSettings::Mode>(modeCombo_->currentData().toInt());
     s.hfStrength = hfSlider_->value() / 100.0;
+    s.rolloff = rolloffSlider_->value() / 100.0;
     s.ultrasonic = ultrasonicCheck_->isChecked();
     return s;
 }
@@ -893,6 +930,7 @@ void MainWindow::refreshControls() {
 
     for (QWidget* w : {static_cast<QWidget*>(rateCombo_), static_cast<QWidget*>(formatCombo_),
                        static_cast<QWidget*>(modeCombo_), static_cast<QWidget*>(hfSlider_),
+                       static_cast<QWidget*>(rolloffSlider_),
                        static_cast<QWidget*>(ultrasonicCheck_)}) {
         w->setEnabled(!busy_);
     }

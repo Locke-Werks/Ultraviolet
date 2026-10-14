@@ -119,13 +119,22 @@ QRectF SpectrogramView::plotRect() const {
 }
 
 double SpectrogramView::freqToY(double hz, const QRectF& r) const {
+    if (linear_) return r.bottom() - std::clamp(hz / displayMaxHz_, 0.0, 1.0) * r.height();
     const double lo = std::log10(kMinHz), hi = std::log10(displayMaxHz_);
     return r.bottom() - (std::log10(std::max(hz, 1.0)) - lo) / (hi - lo) * r.height();
 }
 
 double SpectrogramView::yToFreq(double y, const QRectF& r) const {
+    if (linear_) return std::max(0.0, (r.bottom() - y) / r.height() * displayMaxHz_);
     const double lo = std::log10(kMinHz), hi = std::log10(displayMaxHz_);
     return std::pow(10.0, lo + (r.bottom() - y) / r.height() * (hi - lo));
+}
+
+void SpectrogramView::setLinearFrequency(bool linear) {
+    if (linear_ == linear) return;
+    linear_ = linear;
+    rebuildImage();
+    update();
 }
 
 void SpectrogramView::resizeEvent(QResizeEvent*) { rebuildImage(); }
@@ -157,8 +166,10 @@ void SpectrogramView::rebuildImage() {
     const double logLo = std::log10(s.minHz), logHi = std::log10(s.maxHz);
     for (int y = 0; y < h; ++y) {
         auto* out = reinterpret_cast<QRgb*>(img.scanLine(y));
-        const double f = yToFreq(r.top() + (y + 0.5) / dpr, r);
-        if (f > s.maxHz || f < s.minHz) {
+        // A linear axis starts at 0 Hz, below the lowest data row; show the
+        // lowest row there rather than marking it as missing.
+        const double f = std::max(yToFreq(r.top() + (y + 0.5) / dpr, r), s.minHz);
+        if (f > s.maxHz) {
             // Diagonal hatch marks "no data here", distinct from quiet black.
             for (int x = 0; x < w; ++x)
                 out[x] = (((x + y) / int(std::max<qreal>(1, 3 * dpr))) % 4 == 0) ? kEmptyHatch : kEmpty;
@@ -223,8 +234,16 @@ void SpectrogramView::paintEvent(QPaintEvent*) {
 
     p.setRenderHint(QPainter::Antialiasing);
 
-    static const double kMajor[] = {20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000};
-    for (double f : kMajor) {
+    // Log axis: the decade reference lines. Linear axis: even steps, as in
+    // most external spectrogram tools, so the two can be compared directly.
+    std::vector<double> gridHz;
+    if (linear_) {
+        const double step = displayMaxHz_ <= 30000.0 ? 5000.0 : displayMaxHz_ <= 100000.0 ? 10000.0 : 20000.0;
+        for (double f = step; f <= displayMaxHz_ * 1.0001; f += step) gridHz.push_back(f);
+    } else {
+        gridHz = {20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000};
+    }
+    for (double f : gridHz) {
         if (f < kMinHz || f > displayMaxHz_ * 1.0001) continue;
         const double y = freqToY(f, r);
         const bool focus = (f == 10000.0 || f == 20000.0);

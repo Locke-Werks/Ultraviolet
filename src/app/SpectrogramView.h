@@ -30,6 +30,10 @@ public:
     // A horizontal dashed line, e.g. the detected source cutoff.
     void setCutoffMarker(std::optional<double> hz);
 
+    // Linear frequency axis (0 Hz at the bottom) instead of log. Linear gives
+    // the high octaves, where the extension lives, most of the height.
+    void setLinearFrequency(bool linear);
+
     // Vertical playhead in seconds; nullopt hides it.
     void setPlayhead(std::optional<double> seconds);
 
@@ -51,6 +55,7 @@ private:
     QString title_;
     std::optional<uv::Spectrogram> data_;
     double displayMaxHz_ = 24000.0;
+    bool linear_ = false;
     std::optional<double> cutoffHz_;
     std::optional<double> playhead_;
     QImage image_; // rendered colour image, rebuilt when data or size changes

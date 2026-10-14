@@ -49,37 +49,27 @@ AudioBuffer processBuffer(const AudioBuffer& input, const PipelineSettings& sett
     report(progress, 0.0);
     if (isCancelled(progress)) return {};
 
-    AudioBuffer buf = input;
-
-    const SpectrumInfo info = analyzeSpectrum(buf);
+    const SpectrumInfo info = analyzeSpectrum(input);
     const bool synthesize = wantsSynthesis(settings, info);
     if (isCancelled(progress)) return {};
     report(progress, 0.15);
 
-    auto synth = makeAlgorithmicHfSynthesizer();
+    AudioBuffer buf = input.sampleRate != settings.targetRate
+                          ? resample(input, settings.targetRate)
+                          : input;
+    if (isCancelled(progress)) return {};
+    report(progress, 0.5);
 
+    // Extension runs at the target rate so it can continue the spectrum past
+    // the source Nyquist in one smooth curve instead of stopping at it.
     if (synthesize) {
         HfParams hp;
         hp.strength = settings.hfStrength;
+        hp.cutoffHz = info.cutoffHz;
+        hp.sourceNyquistHz = 0.5 * input.sampleRate;
         hp.ultrasonic = settings.ultrasonic;
-        hp.detectedCutoffHz = info.cutoffHz;
-        synth->restoreInBand(buf, hp); // at source rate
-    }
-    if (isCancelled(progress)) return {};
-    report(progress, 0.4);
-
-    if (buf.sampleRate != settings.targetRate) {
-        buf = resample(buf, settings.targetRate);
-    }
-    if (isCancelled(progress)) return {};
-    report(progress, 0.75);
-
-    if (settings.ultrasonic && synthesize) {
-        HfParams hp;
-        hp.strength = settings.hfStrength;
-        hp.ultrasonic = true;
-        hp.detectedCutoffHz = info.cutoffHz;
-        synth->exciteUltrasonic(buf, hp); // at target rate
+        hp.rolloff = settings.rolloff;
+        makeAlgorithmicHfSynthesizer()->extend(buf, hp);
     }
     if (isCancelled(progress)) return {};
     report(progress, 0.9);

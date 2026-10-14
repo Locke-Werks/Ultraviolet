@@ -18,7 +18,8 @@ struct PipelineSettings {
     } mode = Mode::Auto;
 
     double hfStrength = 0.5; // used in Rescue/Auto-rescue
-    bool ultrasonic = false; // generate content above original Nyquist
+    bool ultrasonic = false; // continue the HF rolloff past 20 kHz into the ultrasonic
+    double rolloff = 0.5;    // 0 gentle .. 1 steep extra decay above the source cutoff
 };
 
 // Progress + cancellation sink implemented by callers (e.g. the GUI worker).

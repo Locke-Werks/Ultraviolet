@@ -98,18 +98,25 @@ bool saveAudio(const std::string& path, const AudioBuffer& buffer,
         case OutputFormat::Pcm24:
             subtype = SF_FORMAT_PCM_24;
             break;
+        case OutputFormat::Float64:
+            subtype = SF_FORMAT_DOUBLE;
+            break;
     }
 
+    // RF64 lifts WAV's 4 GB limit, which 384 kHz / 64-bit stereo passes in
+    // about ten minutes. Auto-downgrade writes a plain WAV whenever the
+    // result fits, so ordinary files stay maximally compatible.
     SF_INFO info{};
     info.samplerate = static_cast<int>(buffer.sampleRate);
     info.channels = channels;
-    info.format = SF_FORMAT_WAV | subtype;
+    info.format = SF_FORMAT_RF64 | subtype;
 
     SNDFILE* snd = sf_open(path.c_str(), SFM_WRITE, &info);
     if (!snd) {
         if (err) *err = sf_strerror(nullptr);
         return false;
     }
+    sf_command(snd, SFC_RF64_AUTO_DOWNGRADE, nullptr, SF_TRUE);
 
     // Clamp samples that round above full scale rather than wrapping, so a
     // 24-bit write of a value at the extreme does not invert.
