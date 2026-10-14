@@ -54,6 +54,7 @@ private slots:
     void onCancel();
     void onPlayOriginal();
     void onPlayProcessed();
+    void onPlayAdded();
     void onStopPlayback();
     void onPlayerStopped();
     void onBatchProgress(int row, int percent);
@@ -121,7 +122,22 @@ private:
     SpectrogramView* sourceView_ = nullptr;
     SpectrogramView* processedView_ = nullptr;
     QTimer* playheadTimer_ = nullptr;
-    enum class Playing { None, Original, Processed } playing_ = Playing::None;
+    enum class Playing { None, Original, Processed, Added } playing_ = Playing::None;
+    // Slowed auditions run longer than the file; divide the play position by
+    // this to place the playhead on the processed spectrogram.
+    double playheadScale_ = 1.0;
+
+    // The isolated, shifted, normalized extension for the selected preview,
+    // cached so replaying the same mode is instant. Keyed so a new Apply or
+    // another file invalidates it.
+    std::shared_ptr<const uv::AudioBuffer> auditionBuf_;
+    int auditionId_ = 0;
+    int auditionToken_ = 0;
+    int auditionMode_ = -1;
+    double auditionGainDb_ = 0.0;
+    bool auditionPreparing_ = false;
+    QComboBox* auditionCombo_ = nullptr;
+    QPushButton* playAddedButton_ = nullptr;
     QLabel* infoLabel_ = nullptr;
     QLabel* hintLabel_ = nullptr;
     QComboBox* rateCombo_ = nullptr;

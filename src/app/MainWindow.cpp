@@ -5,6 +5,7 @@
 #include "SpectrogramView.h"
 #include "SpectrumPlot.h"
 
+#include "uvcore/Audition.h"
 #include "uvcore/AudioFile.h"
 
 #include <QCheckBox>
@@ -216,8 +217,23 @@ void MainWindow::buildUi() {
     stopButton_ = new QPushButton(QStringLiteral("Stop"), viewPane);
     hintLabel_ = new QLabel(viewPane);
     hintLabel_->setStyleSheet(QStringLiteral("color: #ffb347;"));
+    playAddedButton_ = new QPushButton(QStringLiteral("Play added"), viewPane);
+    playAddedButton_->setToolTip(QStringLiteral(
+        "Play only the synthesized extension, moved into hearing range and normalized."));
+    auditionCombo_ = new QComboBox(viewPane);
+    auditionCombo_->addItem(QStringLiteral("Unshifted"), 0);
+    auditionCombo_->addItem(QStringLiteral("Down 1 octave"), 1);
+    auditionCombo_->addItem(QStringLiteral("Down 2 octaves"), 2);
+    auditionCombo_->addItem(QStringLiteral("Slowed 2x"), 3);
+    auditionCombo_->addItem(QStringLiteral("Slowed 4x"), 4);
+    auditionCombo_->setCurrentIndex(2);
+    auditionCombo_->setToolTip(QStringLiteral(
+        "Octave shifts keep the song's timing. Slowed modes are exact but run longer."));
+
     transport->addWidget(playOriginalButton_);
     transport->addWidget(playProcessedButton_);
+    transport->addWidget(playAddedButton_);
+    transport->addWidget(auditionCombo_);
     transport->addWidget(stopButton_);
     transport->addSpacing(12);
     transport->addWidget(hintLabel_, 1);
@@ -340,6 +356,7 @@ void MainWindow::buildUi() {
     connect(playOriginalButton_, &QPushButton::clicked, this, &MainWindow::onPlayOriginal);
     connect(playProcessedButton_, &QPushButton::clicked, this, &MainWindow::onPlayProcessed);
     connect(stopButton_, &QPushButton::clicked, this, &MainWindow::onStopPlayback);
+    connect(playAddedButton_, &QPushButton::clicked, this, &MainWindow::onPlayAdded);
     connect(table_, &QTableWidget::itemSelectionChanged, this, &MainWindow::onSelectionChanged);
 
     connect(hfSlider_, &QSlider::valueChanged, this, [this](int v) {
@@ -481,6 +498,10 @@ void MainWindow::setRowProgress(int id, int percent) {
 
 void MainWindow::onSelectionChanged() {
     player_->stop();
+    // Up to a full-length buffer at the target rate; only worth keeping while
+    // its file stays selected.
+    auditionBuf_.reset();
+    auditionMode_ = -1;
     Entry* e = selectedEntry();
     releaseBuffersExcept(e ? e->id : 0);
     if (e && !e->source && !e->loading) {
@@ -785,6 +806,7 @@ void MainWindow::onPlayOriginal() {
         player_->play(*e->source);
         if (player_->isPlaying()) {
             playing_ = Playing::Original;
+            playheadScale_ = 1.0;
             playheadTimer_->start();
         }
     }
@@ -797,17 +819,108 @@ void MainWindow::onPlayProcessed() {
         player_->play(*e->processed);
         if (player_->isPlaying()) {
             playing_ = Playing::Processed;
+            playheadScale_ = 1.0;
             playheadTimer_->start();
         }
     }
 }
 
+namespace {
+
+QString auditionLabel(int mode) {
+    switch (mode) {
+        case 1: return QStringLiteral("down 1 octave");
+        case 2: return QStringLiteral("down 2 octaves");
+        case 3: return QStringLiteral("slowed 2x");
+        case 4: return QStringLiteral("slowed 4x");
+        default: return QStringLiteral("unshifted");
+    }
+}
+
+double auditionTimeScale(int mode) { return mode == 3 ? 2.0 : mode == 4 ? 4.0 : 1.0; }
+
+} // namespace
+
+void MainWindow::onPlayAdded() {
+    Entry* e = selectedEntry();
+    if (!e || !e->source || !e->processed || !previewValid(*e) || auditionPreparing_) return;
+    const int mode = auditionCombo_->currentData().toInt();
+    const int id = e->id;
+    const int token = e->applyToken;
+
+    auto start = [this, mode] {
+        const QString gain = QString::number(auditionGainDb_, 'f', 0);
+        hintLabel_->setText(QStringLiteral("Playing added content only (%1, +%2 dB to normalize)")
+                                .arg(auditionLabel(mode), gain));
+        player_->play(*auditionBuf_);
+        if (player_->isPlaying()) {
+            playing_ = Playing::Added;
+            playheadScale_ = auditionTimeScale(mode);
+            playheadTimer_->start();
+        }
+        refreshControls();
+    };
+
+    if (auditionBuf_ && auditionId_ == id && auditionToken_ == token && auditionMode_ == mode) {
+        start();
+        return;
+    }
+
+    player_->stop();
+    auditionPreparing_ = true;
+    hintLabel_->setText(QStringLiteral("Preparing audition..."));
+    refreshControls();
+
+    struct Result {
+        std::shared_ptr<const uv::AudioBuffer> buffer;
+        double gainDb = 0.0;
+    };
+    const auto processed = e->processed;
+    const auto source = e->source;
+    auto* watcher = new QFutureWatcher<Result>(this);
+    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, id, token, mode, start] {
+        watcher->deleteLater();
+        auditionPreparing_ = false;
+        Result r = watcher->result();
+        const Entry* sel = selectedEntry();
+        // The user may have moved on while this was computing.
+        if (!sel || sel->id != id || sel->applyToken != token || !previewValid(*sel)) {
+            hintLabel_->clear();
+            refreshControls();
+            return;
+        }
+        auditionBuf_ = std::move(r.buffer);
+        auditionId_ = id;
+        auditionToken_ = token;
+        auditionMode_ = mode;
+        auditionGainDb_ = r.gainDb;
+        if (auditionGainDb_ == 0.0 && hintLabel_) {
+            hintLabel_->setText(QStringLiteral("Nothing was added to this file (mode or settings left it transparent)."));
+            refreshControls();
+            return;
+        }
+        start();
+    });
+    watcher->setFuture(QtConcurrent::run([processed, source, mode] {
+        uv::AudioBuffer a = uv::addedComponent(*processed, *source);
+        if (mode == 1 || mode == 2) a = uv::pitchShiftDown(a, mode);
+        else if (mode == 3 || mode == 4) a = uv::timeExpand(a, auditionTimeScale(mode));
+        Result r;
+        r.gainDb = uv::normalizePeak(a);
+        r.buffer = std::make_shared<const uv::AudioBuffer>(std::move(a));
+        return r;
+    }));
+}
+
 void MainWindow::updatePlayhead() {
-    const std::optional<double> t =
-        player_->isPlaying() ? std::optional<double>(player_->positionSeconds()) : std::nullopt;
-    // The playhead shows on the view of whichever version is being heard.
+    const std::optional<double> t = player_->isPlaying()
+                                        ? std::optional<double>(player_->positionSeconds() / playheadScale_)
+                                        : std::nullopt;
+    // The playhead shows on the view of whichever version is being heard; the
+    // added-only audition is part of the processed version.
     sourceView_->setPlayhead(playing_ == Playing::Original ? t : std::nullopt);
-    processedView_->setPlayhead(playing_ == Playing::Processed ? t : std::nullopt);
+    processedView_->setPlayhead(playing_ == Playing::Processed || playing_ == Playing::Added ? t
+                                                                                           : std::nullopt);
 }
 
 void MainWindow::onStopPlayback() { player_->stop(); }
@@ -926,6 +1039,7 @@ void MainWindow::refreshControls() {
 
     playOriginalButton_->setEnabled(haveSource);
     playProcessedButton_->setEnabled(havePreview);
+    playAddedButton_->setEnabled(havePreview && haveSource && !auditionPreparing_);
     stopButton_->setEnabled(playing);
 
     for (QWidget* w : {static_cast<QWidget*>(rateCombo_), static_cast<QWidget*>(formatCombo_),

@@ -8,6 +8,7 @@ add_library(uvcore STATIC
     src/Dither.cpp
     src/AlgorithmicHfSynthesizer.cpp
     src/Pipeline.cpp
+    src/Audition.cpp
 )
 
 target_include_directories(uvcore PUBLIC include)
