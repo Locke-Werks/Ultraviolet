@@ -208,4 +208,82 @@ SpectrumInfo analyzeSpectrum(const AudioBuffer& buffer) {
     return info;
 }
 
+SpectrumCurve computeSpectrumCurve(const AudioBuffer& buffer, int fftSize) {
+    SpectrumCurve c;
+    c.sampleRate = buffer.sampleRate;
+    if (buffer.empty() || buffer.sampleRate <= 0.0 || fftSize < 2) return c;
+
+    const std::size_t frames = buffer.frames();
+    const int channels = buffer.channelCount();
+    std::vector<double> mono(frames, 0.0);
+    for (int ch = 0; ch < channels; ++ch) {
+        const auto& src = buffer.channels[ch];
+        const std::size_t n = std::min(frames, src.size());
+        for (std::size_t i = 0; i < n; ++i) mono[i] += src[i];
+    }
+    if (channels > 1) {
+        const double inv = 1.0 / static_cast<double>(channels);
+        for (auto& s : mono) s *= inv;
+    }
+
+    const int numBins = fftSize / 2 + 1;
+    const std::size_t hop = static_cast<std::size_t>(fftSize / 2);
+
+    std::vector<double> window(fftSize);
+    double windowSum = 0.0;
+    for (int n = 0; n < fftSize; ++n) {
+        window[n] = 0.5 * (1.0 - std::cos(2.0 * kPi * n / (fftSize - 1)));
+        windowSum += window[n];
+    }
+
+    double* in = fftw_alloc_real(fftSize);
+    fftw_complex* out = fftw_alloc_complex(numBins);
+    fftw_plan plan = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(planMutex());
+        plan = fftw_plan_dft_r2c_1d(fftSize, in, out, FFTW_ESTIMATE);
+    }
+
+    std::size_t numBlocks = 1;
+    if (mono.size() > static_cast<std::size_t>(fftSize)) {
+        numBlocks = (mono.size() - fftSize) / hop + 1;
+    }
+
+    // Averaging power rather than magnitude keeps noisy bins from jittering
+    // between redraws and matches how a level meter integrates energy.
+    std::vector<double> powSum(numBins, 0.0);
+    for (std::size_t b = 0; b < numBlocks; ++b) {
+        const std::size_t start = b * hop;
+        for (int n = 0; n < fftSize; ++n) {
+            const std::size_t idx = start + static_cast<std::size_t>(n);
+            in[n] = (idx < mono.size() ? mono[idx] : 0.0) * window[n];
+        }
+        fftw_execute(plan);
+        for (int k = 0; k < numBins; ++k) {
+            powSum[k] += out[k][0] * out[k][0] + out[k][1] * out[k][1];
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(planMutex());
+        fftw_destroy_plan(plan);
+    }
+    fftw_free(in);
+    fftw_free(out);
+
+    // 2/sum(window) undoes the one-sided split and the window's coherent gain,
+    // so a full-scale sine lands at 0 dBFS regardless of fftSize.
+    const double scale = 2.0 / windowSum;
+    const double invBlocks = 1.0 / static_cast<double>(numBlocks);
+    c.freqHz.reserve(numBins - 1);
+    c.magDb.reserve(numBins - 1);
+    for (int k = 1; k < numBins; ++k) {
+        const double mag = std::sqrt(powSum[k] * invBlocks) * scale;
+        const double db = mag > 0.0 ? 20.0 * std::log10(mag) : -200.0;
+        c.freqHz.push_back(static_cast<float>(k * buffer.sampleRate / fftSize));
+        c.magDb.push_back(static_cast<float>(std::max(db, -200.0)));
+    }
+    return c;
+}
+
 } // namespace uv

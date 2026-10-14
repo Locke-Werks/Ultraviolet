@@ -29,7 +29,14 @@ public:
     virtual bool cancelled() const { return false; }
 };
 
-// Run the full offline pipeline on one file. Returns false on failure.
+// In-memory processing: every stage except file IO. Used for preview, so
+// nothing touches disk until the user saves. Returns an empty buffer if
+// cancelled.
+AudioBuffer processBuffer(const AudioBuffer& input, const PipelineSettings& settings,
+                          ProgressSink* progress = nullptr);
+
+// Run the full offline pipeline on one file (load, processBuffer, save).
+// Returns false on failure.
 bool runPipeline(const std::string& inputPath, const std::string& outputPath,
                  const PipelineSettings& settings, ProgressSink* progress = nullptr,
                  std::string* err = nullptr);

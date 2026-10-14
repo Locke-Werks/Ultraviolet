@@ -2,6 +2,8 @@
 
 #include "uvcore/Types.h"
 
+#include <vector>
+
 namespace uv {
 
 // Summary of a source's high-frequency content, used to drive auto mode
@@ -15,5 +17,16 @@ struct SpectrumInfo {
 
 // Analyze a (source-rate) buffer with a windowed-average magnitude spectrum.
 SpectrumInfo analyzeSpectrum(const AudioBuffer& buffer);
+
+// Averaged magnitude spectrum for display. Absolute scaling (a full-scale sine
+// reads ~0 dB) so curves from different buffers, including different sample
+// rates, can be overlaid and compared directly.
+struct SpectrumCurve {
+    double sampleRate = 0.0;
+    std::vector<float> freqHz; // ascending bin centre frequencies, DC excluded
+    std::vector<float> magDb;  // same length
+};
+
+SpectrumCurve computeSpectrumCurve(const AudioBuffer& buffer, int fftSize = 8192);
 
 } // namespace uv

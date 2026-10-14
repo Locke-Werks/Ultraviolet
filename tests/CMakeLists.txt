@@ -8,6 +8,7 @@ add_executable(uvtests
     test_spectral.cpp
     test_hfsynth.cpp
     test_pipeline.cpp
+    test_processing.cpp
 )
 
 target_link_libraries(uvtests PRIVATE

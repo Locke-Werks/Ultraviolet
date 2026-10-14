@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia Concurrent)
 
 qt_standard_project_setup()
 
@@ -8,6 +8,10 @@ qt_add_executable(uvapp WIN32
     MainWindow.h
     ProcessWorker.cpp
     ProcessWorker.h
+    SpectrumPlot.cpp
+    SpectrumPlot.h
+    AudioPlayer.cpp
+    AudioPlayer.h
     resources.qrc
     ultraviolet.rc
 )
@@ -20,6 +24,8 @@ target_include_directories(uvapp PRIVATE
 target_link_libraries(uvapp PRIVATE
     uvcore
     Qt6::Widgets
+    Qt6::Multimedia
+    Qt6::Concurrent
 )
 
 set_target_properties(uvapp PROPERTIES OUTPUT_NAME "Ultraviolet")
