@@ -6,6 +6,9 @@ qt_add_executable(uvapp WIN32
     main.cpp
     MainWindow.cpp
     MainWindow.h
+    ProcessWorker.cpp
+    ProcessWorker.h
+    resources.qrc
     ultraviolet.rc
 )
 

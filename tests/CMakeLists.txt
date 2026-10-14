@@ -7,6 +7,7 @@ add_executable(uvtests
     test_dither.cpp
     test_spectral.cpp
     test_hfsynth.cpp
+    test_pipeline.cpp
 )
 
 target_link_libraries(uvtests PRIVATE

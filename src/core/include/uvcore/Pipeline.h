@@ -25,7 +25,7 @@ struct PipelineSettings {
 class ProgressSink {
 public:
     virtual ~ProgressSink() = default;
-    virtual void onProgress(double fraction01) {}
+    virtual void onProgress(double /*fraction01*/) {}
     virtual bool cancelled() const { return false; }
 };
 
