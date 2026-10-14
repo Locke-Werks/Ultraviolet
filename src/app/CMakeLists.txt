@@ -23,3 +23,17 @@ target_link_libraries(uvapp PRIVATE
 )
 
 set_target_properties(uvapp PROPERTIES OUTPUT_NAME "Ultraviolet")
+
+# Stage the Qt runtime (DLLs, platform/style/imageformat plugins) next to the
+# exe after every build. Without this the app fails to launch on any machine
+# that does not already have the matching Qt bin on PATH.
+find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${Qt6_DIR}/../../../bin")
+if(WINDEPLOYQT_EXECUTABLE)
+    add_custom_command(TARGET uvapp POST_BUILD
+        COMMAND "${WINDEPLOYQT_EXECUTABLE}"
+                --$<IF:$<CONFIG:Debug>,debug,release>
+                --no-translations --no-compiler-runtime
+                "$<TARGET_FILE:uvapp>"
+        COMMENT "Deploying Qt runtime next to Ultraviolet.exe"
+        VERBATIM)
+endif()
