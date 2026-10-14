@@ -32,3 +32,6 @@ CMakeUserPresets.json
 # OS
 Thumbs.db
 desktop.ini
+
+# Logs
+*.log
