@@ -1,0 +1,33 @@
+# Build
+/build/
+/out/
+/cmake-build-*/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.lib
+*.dll
+*.exp
+
+# vcpkg
+/vcpkg_installed/
+
+# Qt
+*.moc
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+
+# IDE
+/.vs/
+/.vscode/
+/.idea/
+CMakeUserPresets.json
+
+# Reliquary project pointer (per global rules: never committed)
+.reliquary-project
+
+# OS
+Thumbs.db
+desktop.ini

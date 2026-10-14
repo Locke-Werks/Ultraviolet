@@ -1,0 +1,4 @@
+* text=auto
+*.rc text
+*.ico binary
+*.png binary

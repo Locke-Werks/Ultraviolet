@@ -1,0 +1,4 @@
+#include "resource.h"
+
+// Declared first so Explorer uses it as the file icon.
+IDI_APPICON ICON "ultraviolet.ico"

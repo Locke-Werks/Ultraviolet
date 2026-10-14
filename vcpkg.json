@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "ultraviolet",
+  "version": "0.1.0",
+  "description": "Audio upscaler",
+  "builtin-baseline": "d3a1e8c161275780ebf2eebd8c6b70d9fabc0a19",
+  "dependencies": [
+    "libsndfile",
+    "fftw3",
+    "catch2"
+  ]
+}
