@@ -2,5 +2,6 @@
 <RCC version="1.0">
     <qresource prefix="/">
         <file alias="ultraviolet.png">../../assets/ultraviolet.png</file>
+        <file alias="ultraviolet.ico">../../assets/ultraviolet.ico</file>
     </qresource>
 </RCC>

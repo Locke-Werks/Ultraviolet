@@ -1,0 +1,21 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      - name: Build
+        run: |
+          cmake --preset ci
+          cmake --build build --config Release
+
+      - name: Test
+        run: ./build/tests/Release/uvtests.exe

@@ -1,0 +1,89 @@
+# Forge installer configuration. Schema: Locke-Werks/Forge docs/config-schema.md
+#
+# Paths use literal strings so a backslash stays a backslash. A TOML basic string
+# would read "\U" in "{InstallDir}\Ultraviolet.exe" as an escape.
+
+[product]
+name         = "Ultraviolet"
+version      = "0.1.0"
+publisher    = "Locke Werks"
+description  = "Audio upscaler: 384 kHz / 64-bit conversion with high-frequency extension"
+copyright    = "Copyright (C) 2026 Locke Werks"
+url          = "https://github.com/Locke-Werks/Ultraviolet"
+icon         = "assets/ultraviolet.ico"
+# Stable across versions. Keys the single-instance mutex and the upgrade path.
+upgrade_code = "e4cf5627-fb04-4617-afde-d3cf8e8007e5"
+aumid        = "LockeWerks.Ultraviolet"
+
+[install]
+scope     = "machine"
+dir       = '{ProgramFiles}\Locke Werks\Ultraviolet'
+elevation = "required"
+
+[ui]
+license_text = """
+Ultraviolet
+Copyright (C) 2026 Locke Werks
+
+This program is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with this
+program. If not, see <https://www.gnu.org/licenses/>.
+
+Bundled components: Qt 6 (LGPLv3), libsndfile (LGPL-2.1), FFTW 3 (GPL-2.0+),
+r8brain-free-src (MIT). The complete source is at
+https://github.com/Locke-Werks/Ultraviolet
+"""
+
+[[preflight]]
+type = "os_build"
+min  = 22000
+fail = "Ultraviolet needs Windows 11 or newer."
+
+# An upgrade cannot overwrite a running copy.
+[[preflight]]
+type            = "process_not_running"
+name            = "Ultraviolet.exe"
+restart_manager = true
+fail            = "Ultraviolet is running. Close it and try again."
+
+# The payload is the app plus the Qt runtime, about 100 MB.
+[[preflight]]
+type  = "free_disk_space"
+bytes = 209715200
+fail  = "Ultraviolet needs about 200 MB free on the install volume."
+
+[[options]]
+id      = "start_menu"
+label   = "Add a Start Menu shortcut"
+detail  = "Puts Ultraviolet in the Start Menu for everyone on this machine."
+default = true
+
+[[options]]
+id      = "desktop"
+label   = "Add a desktop shortcut"
+detail  = "Puts Ultraviolet on the public desktop."
+default = false
+
+[[actions]]
+type   = "shortcut"
+target = '{InstallDir}\Ultraviolet.exe'
+name   = "Ultraviolet"
+when   = "start_menu"
+
+[[actions]]
+type   = "shortcut"
+target = '{InstallDir}\Ultraviolet.exe'
+name   = "Ultraviolet"
+where  = "desktop"
+when   = "desktop"
+
+[[actions]]
+type = "arp"

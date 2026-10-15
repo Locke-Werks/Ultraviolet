@@ -1,16 +1,12 @@
 # Third-party components
 
-Ultraviolet is licensed under GPLv3. The following dependencies are used and
-their licenses are compatible with GPLv3.
+| Component | License | Use |
+|---|---|---|
+| [Qt 6](https://www.qt.io/) (Widgets, Multimedia, Concurrent) | LGPLv3 | GUI and audio output, linked dynamically |
+| [libsndfile](https://github.com/libsndfile/libsndfile) | LGPL-2.1 | WAV, RF64, FLAC and AIFF reading and writing |
+| [FFTW 3](https://www.fftw.org/) | GPL-2.0-or-later | Every FFT: analysis, extension, audition, selection, air shelf |
+| [r8brain-free-src](https://github.com/avaneev/r8brain-free-src) | MIT | Sample rate conversion, vendored in `third_party/` |
+| [Catch2](https://github.com/catchorg/Catch2) | BSL-1.0 | Tests only, not shipped |
 
-| Component          | Purpose                          | License        |
-| ------------------ | -------------------------------- | -------------- |
-| Qt 6               | Desktop GUI framework            | LGPLv3 / GPLv3 |
-| libsndfile         | Audio file decode/encode         | LGPL-2.1       |
-| FFTW3              | FFT for spectral analysis        | GPL-2.0+       |
-| r8brain-free-src   | High-quality arbitrary resampler | MIT            |
-| Catch2             | Unit test framework              | BSL-1.0        |
-
-r8brain-free-src is vendored under `third_party/r8brain-free-src/`. The other
-components are resolved at build time (Qt from the system Qt install; the rest
-via the vcpkg manifest in `vcpkg.json`).
+libsndfile pulls in libFLAC, libogg, libvorbis, libopus, mpg123 and LAME through
+vcpkg, each under its own BSD, LGPL or similar license.

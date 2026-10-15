@@ -1,0 +1,30 @@
+name: setup
+description: Qt, vcpkg at the manifest baseline, and a vcpkg binary cache
+
+runs:
+  using: composite
+  steps:
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.11.3'
+        arch: win64_msvc2022_64
+        modules: qtmultimedia
+        cache: true
+
+    # The runner image ships a vcpkg clone that may predate the manifest's
+    # builtin-baseline, and a missing baseline commit fails configure.
+    - name: Bring vcpkg to the baseline
+      shell: pwsh
+      run: |
+        $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+        git -C $env:VCPKG_INSTALLATION_ROOT fetch --quiet origin
+        git -C $env:VCPKG_INSTALLATION_ROOT checkout --quiet $baseline
+        & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+
+    # FFTW and libsndfile with its codecs take most of the job to build cold.
+    - name: Cache vcpkg archives
+      uses: actions/cache@v4
+      with:
+        path: ~\AppData\Local\vcpkg\archives
+        key: vcpkg-${{ hashFiles('vcpkg.json') }}

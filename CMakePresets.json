@@ -13,6 +13,16 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/6.11.3/msvc2022_64",
         "VCPKG_TARGET_TRIPLET": "x64-windows"
       }
+    },
+    {
+      "name": "ci",
+      "displayName": "CI (newest Visual Studio, runner vcpkg and Qt)",
+      "binaryDir": "${sourceDir}/build",
+      "toolchainFile": "$env{VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT_DIR}",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      }
     }
   ],
   "buildPresets": [

@@ -32,7 +32,9 @@ target_link_libraries(uvapp PRIVATE
     Qt6::Concurrent
 )
 
-set_target_properties(uvapp PROPERTIES OUTPUT_NAME "Ultraviolet")
+# qt_standard_project_setup turns on AUTOMOC and AUTOUIC but not AUTORCC, and
+# without it resources.qrc is listed in the project and never compiled.
+set_target_properties(uvapp PROPERTIES OUTPUT_NAME "Ultraviolet" AUTORCC ON)
 
 # Stage the Qt runtime (DLLs, platform/style/imageformat plugins) next to the
 # exe after every build. Without this the app fails to launch on any machine

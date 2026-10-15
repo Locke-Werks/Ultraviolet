@@ -1,0 +1,175 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  # Pinned, so a Forge release cannot change what this job produces without
+  # someone choosing it. v0.4.0 or later rejects unknown hook phases and
+  # options by name; v0.4.1 also reports files an uninstall could not remove.
+  FORGE_VERSION: v0.4.1
+
+jobs:
+  release:
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches every version string
+        shell: pwsh
+        run: |
+          $tag   = "${{ github.ref_name }}" -replace '^v', ''
+          $toml  = (Select-String -Path installer.toml -Pattern '^\s*version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $cmake = (Select-String -Path CMakeLists.txt -Pattern '^\s*VERSION\s+(\d+\.\d+\.\d+)').Matches[0].Groups[1].Value
+          $vcpkg = (Get-Content vcpkg.json | ConvertFrom-Json).version
+          "tag=$tag installer.toml=$toml CMakeLists=$cmake vcpkg.json=$vcpkg"
+          foreach ($v in $toml, $cmake, $vcpkg) { if ($v -ne $tag) { throw "version $v does not match tag $tag" } }
+
+      - uses: ./.github/actions/setup
+
+      - name: Build
+        run: |
+          cmake --preset ci
+          cmake --build build --config Release
+
+      - name: Test
+        run: ./build/tests/Release/uvtests.exe
+
+      # The post-build windeployqt step has already put Qt and its plugins next
+      # to the exe, and vcpkg's applocal step the FFTW and libsndfile DLLs.
+      # windeployqt is told not to copy the compiler runtime, so the CRT comes
+      # from the Visual Studio redist directory instead of a nested installer.
+      - name: Stage the payload
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force stage | Out-Null
+          Copy-Item build/src/app/Release/* stage -Recurse -Exclude *.pdb,*.ilk,*.exp,*.lib
+          $vs  = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -Directory | Sort-Object FullName | Select-Object -Last 1
+          "CRT from $($crt.FullName)"
+          Copy-Item "$($crt.FullName)\*.dll" stage
+          Get-ChildItem stage -Recurse -File | Measure-Object Length -Sum | ForEach-Object { "$($_.Count) files, $([math]::Round($_.Sum / 1MB, 1)) MB" }
+
+      # Qt and Microsoft ship their DLLs signed already. Only what is unsigned
+      # is moved aside and signed, so their own signatures are not replaced.
+      - name: Collect unsigned payload binaries
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path stage).Path
+          Get-ChildItem stage -Recurse -Include *.exe,*.dll | Where-Object {
+            (Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid'
+          } | ForEach-Object {
+            $rel = $_.FullName.Substring($root.Length + 1)
+            $dst = Join-Path tosign $rel
+            New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
+            Move-Item $_.FullName $dst
+            "to sign: $rel"
+          }
+
+      - name: Sign the payload
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net
+          trusted-signing-account-name: specterpoint
+          certificate-profile-name: specterpoint
+          files-folder: tosign
+          files-folder-filter: exe,dll
+          files-folder-recurse: true
+          file-digest: SHA256
+          # Certificates last three days; without a timestamp the signature
+          # stops validating within the week.
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Return signed binaries and verify the whole payload
+        shell: pwsh
+        run: |
+          Copy-Item tosign/* stage -Recurse -Force
+          $bad = Get-ChildItem stage -Recurse -Include *.exe,*.dll | Where-Object {
+            (Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid'
+          }
+          $bad | ForEach-Object { "UNSIGNED: $($_.FullName)" }
+          if ($bad) { throw "payload has unsigned binaries" }
+          $sig = Get-AuthenticodeSignature stage/Ultraviolet.exe
+          "Ultraviolet.exe: $($sig.Status)  $($sig.SignerCertificate.Subject)"
+
+      - name: Fetch Forge
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download $env:FORGE_VERSION --repo Locke-Werks/Forge `
+            --pattern '*.exe' --dir tools
+          foreach ($name in 'lwforge.exe', 'lwstub.exe') {
+            $sig = Get-AuthenticodeSignature "tools/$name"
+            "$name : $($sig.Status)"
+            if ($sig.Status -ne 'Valid') { throw "tools/$name is $($sig.Status)" }
+          }
+
+      # No --sign: it resolves scripts/sign.ps1 against the working directory,
+      # which exists only in the Forge repository.
+      - name: Forge the installer
+        shell: pwsh
+        run: |
+          ./tools/lwforge.exe build `
+            --config installer.toml `
+            --payload stage `
+            --stub tools/lwstub.exe `
+            --out dist/Ultraviolet-Setup.exe
+
+      - name: Sign the installer
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net
+          trusted-signing-account-name: specterpoint
+          certificate-profile-name: specterpoint
+          files-folder: dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify the installer
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature dist/Ultraviolet-Setup.exe
+          "installer: $($sig.Status)  $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { throw "installer is $($sig.Status)" }
+          # The certificate table now follows the container; this proves the
+          # signed installer can still read its own payload.
+          ./tools/lwforge.exe inspect dist/Ultraviolet-Setup.exe
+          if ($LASTEXITCODE -ne 0) { throw "the signed installer cannot read its own container" }
+
+      - name: Verify the option surface
+        shell: pwsh
+        run: |
+          $report = & dist/Ultraviolet-Setup.exe --check-only /O:start_menu=on /O:desktop=off 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          $report
+          if ($report -match 'not declared|does not declare|unknown option') {
+            throw "the installer rejected an option id it is supposed to declare`n$report"
+          }
+          # Anything else non-zero is the runner failing a preflight (hosted
+          # runners are Server builds below the Windows 11 floor).
+          if ($code -ne 0) { Write-Host "::warning::--check-only exited $code" }
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/Ultraviolet-Setup.exe `
+            --repo "${{ github.repository }}" `
+            --title "Ultraviolet ${{ github.ref_name }}" `
+            --notes-file .github/release-notes.md
