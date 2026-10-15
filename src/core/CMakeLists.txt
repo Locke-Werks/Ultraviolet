@@ -10,6 +10,7 @@ add_library(uvcore STATIC
     src/Pipeline.cpp
     src/Audition.cpp
     src/Selection.cpp
+    src/AirShelf.cpp
 )
 
 target_include_directories(uvcore PUBLIC include)

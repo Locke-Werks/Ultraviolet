@@ -1,5 +1,6 @@
 #include "uvcore/Pipeline.h"
 
+#include "uvcore/AirShelf.h"
 #include "uvcore/Dither.h"
 #include "uvcore/HfSynthesizer.h"
 #include "uvcore/Resampler.h"
@@ -75,6 +76,10 @@ AudioBuffer processBuffer(const AudioBuffer& input, const PipelineSettings& sett
         hp.rolloff = settings.rolloff;
         makeAlgorithmicHfSynthesizer()->extend(buf, hp);
     }
+    if (isCancelled(progress)) return {};
+    // After the extension, so the shelf lifts the synthesized band with the
+    // rest of the top end, the way a mastering EQ after the upsampler would.
+    applyAirShelf(buf, settings.airDb);
     if (isCancelled(progress)) return {};
     report(progress, 0.9);
 

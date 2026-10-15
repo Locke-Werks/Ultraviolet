@@ -23,6 +23,9 @@ struct PipelineSettings {
     // > 0 replaces the detected cutoff. Below the real cutoff the extension is
     // added over the original, which thickens the upper audible band.
     double cutoffOverrideHz = 0.0;
+    // Air shelf gain at 20 kHz in dB, 0 = off. A deliberate change to the
+    // audible band, so it applies in every mode, Mastering included.
+    double airDb = 0.0;
 };
 
 // Progress + cancellation sink implemented by callers (e.g. the GUI worker).

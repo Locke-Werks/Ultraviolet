@@ -57,7 +57,7 @@ bool isSupportedAudio(const QString& path) {
 bool sameSettings(const uv::PipelineSettings& a, const uv::PipelineSettings& b) {
     return a.targetRate == b.targetRate && a.outputFormat == b.outputFormat &&
            a.mode == b.mode && a.hfStrength == b.hfStrength && a.ultrasonic == b.ultrasonic &&
-           a.rolloff == b.rolloff && a.cutoffOverrideHz == b.cutoffOverrideHz;
+           a.rolloff == b.rolloff && a.cutoffOverrideHz == b.cutoffOverrideHz && a.airDb == b.airDb;
 }
 
 QString kHz(double hz) {
@@ -364,6 +364,25 @@ void MainWindow::buildUi() {
     ultrasonicCheck_->setChecked(true);
     form->addWidget(ultrasonicCheck_);
 
+    auto* airRow = new QHBoxLayout();
+    airCheck_ = new QCheckBox(QStringLiteral("Air shelf"), settings);
+    airCheck_->setToolTip(QStringLiteral(
+        "Mastering tilt: flat below 4 kHz, rising to the set gain at 20 kHz and held above, "
+        "including the extension. Fitted to the PGGB plus VST reference (about 6.5 dB)."));
+    airValueLabel_ = new QLabel(QStringLiteral("off"), settings);
+    airValueLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    airRow->addWidget(airCheck_);
+    airRow->addStretch(1);
+    airRow->addWidget(airValueLabel_);
+    form->addLayout(airRow);
+
+    // Half-dB steps up to 12 dB.
+    airSlider_ = new QSlider(Qt::Horizontal, settings);
+    airSlider_->setRange(1, 24);
+    airSlider_->setValue(13);
+    airSlider_->setEnabled(false);
+    form->addWidget(airSlider_);
+
     form->addSpacing(8);
     form->addWidget(new QLabel(QStringLiteral("Output folder"), settings));
     auto* outRow = new QHBoxLayout();
@@ -430,6 +449,20 @@ void MainWindow::buildUi() {
         }
         updateCutoffLabel();
         refreshControls();
+        onSettingsChanged();
+    });
+    auto updateAirLabel = [this] {
+        airValueLabel_->setText(airCheck_->isChecked()
+                                    ? QStringLiteral("+%1 dB").arg(airSlider_->value() * 0.5, 0, 'f', 1)
+                                    : QStringLiteral("off"));
+    };
+    connect(airCheck_, &QCheckBox::toggled, this, [this, updateAirLabel](bool) {
+        updateAirLabel();
+        refreshControls();
+        onSettingsChanged();
+    });
+    connect(airSlider_, &QSlider::valueChanged, this, [this, updateAirLabel](int) {
+        updateAirLabel();
         onSettingsChanged();
     });
     connect(cutoffSlider_, &QSlider::valueChanged, this, [this, updateCutoffLabel](int) {
@@ -529,6 +562,7 @@ uv::PipelineSettings MainWindow::currentSettings() const {
     s.rolloff = rolloffSlider_->value() / 100.0;
     s.ultrasonic = ultrasonicCheck_->isChecked();
     if (cutoffCheck_->isChecked()) s.cutoffOverrideHz = cutoffSlider_->value() * 100.0;
+    if (airCheck_->isChecked()) s.airDb = airSlider_->value() * 0.5;
     return s;
 }
 
@@ -1141,9 +1175,10 @@ void MainWindow::refreshControls() {
     for (QWidget* w : {static_cast<QWidget*>(rateCombo_), static_cast<QWidget*>(formatCombo_),
                        static_cast<QWidget*>(modeCombo_), static_cast<QWidget*>(hfSlider_),
                        static_cast<QWidget*>(rolloffSlider_),
-                       static_cast<QWidget*>(ultrasonicCheck_), static_cast<QWidget*>(cutoffCheck_)}) {
+                       static_cast<QWidget*>(ultrasonicCheck_), static_cast<QWidget*>(cutoffCheck_), static_cast<QWidget*>(airCheck_)}) {
         w->setEnabled(!busy_);
     }
+    airSlider_->setEnabled(!busy_ && airCheck_->isChecked());
     cutoffSlider_->setEnabled(!busy_ && cutoffCheck_->isChecked());
 }
 

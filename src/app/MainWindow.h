@@ -159,6 +159,9 @@ private:
     QLabel* rolloffValueLabel_ = nullptr;
     QCheckBox* ultrasonicCheck_ = nullptr;
     QCheckBox* cutoffCheck_ = nullptr;
+    QCheckBox* airCheck_ = nullptr;
+    QSlider* airSlider_ = nullptr;
+    QLabel* airValueLabel_ = nullptr;
     QSlider* cutoffSlider_ = nullptr;
     QLabel* cutoffValueLabel_ = nullptr;
     QLineEdit* outputFolderEdit_ = nullptr;
