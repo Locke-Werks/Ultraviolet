@@ -4,10 +4,12 @@ description: Qt, vcpkg at the manifest baseline, and a vcpkg binary cache
 runs:
   using: composite
   steps:
+    # 6.10 rather than the 6.11 used locally: aqtinstall 3.3.0 cannot read the
+    # 6.11 repository metadata yet. Nothing here needs a 6.11 API.
     - name: Install Qt
       uses: jurplel/install-qt-action@v4
       with:
-        version: '6.11.3'
+        version: '6.10.3'
         arch: win64_msvc2022_64
         modules: qtmultimedia
         cache: true
