@@ -25,6 +25,7 @@ namespace uv::app {
 class AudioPlayer;
 class SpectrogramView;
 class SpectrumPlot;
+class WaveformView;
 
 // Preview-first upscaler window. Selecting a file loads it and shows its
 // spectrum; Apply processes it in memory and overlays the result; the user
@@ -122,6 +123,7 @@ private:
     SpectrumPlot* plot_ = nullptr;
     SpectrogramView* sourceView_ = nullptr;
     SpectrogramView* processedView_ = nullptr;
+    WaveformView* waveView_ = nullptr;
     QTimer* playheadTimer_ = nullptr;
     enum class Playing { None, Original, Processed, Added } playing_ = Playing::None;
     // Slowed auditions run longer than the file; divide the play position by

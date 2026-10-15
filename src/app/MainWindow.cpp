@@ -3,6 +3,7 @@
 #include "AudioPlayer.h"
 #include "ProcessWorker.h"
 #include "SpectrogramView.h"
+#include "WaveformView.h"
 #include "SpectrumPlot.h"
 
 #include "uvcore/Audition.h"
@@ -203,8 +204,11 @@ void MainWindow::buildUi() {
     processedView_->setLinearFrequency(true);
     graphs->addWidget(plot_);
     graphs->addWidget(sgramPane);
+    waveView_ = new WaveformView(graphs);
+    graphs->addWidget(waveView_);
     graphs->setStretchFactor(0, 3);
     graphs->setStretchFactor(1, 2);
+    graphs->setStretchFactor(2, 2);
     viewLayout->addWidget(graphs, 1);
 
     infoLabel_ = new QLabel(viewPane);
@@ -246,6 +250,7 @@ void MainWindow::buildUi() {
     auto onSel = [this](SpectrogramView* other, std::optional<uv::Selection> s) {
         selection_ = s;
         other->setSelection(s);
+        if (s && s->hasTime) waveView_->showRange(s->t0, s->t1);
     };
     connect(sourceView_, &SpectrogramView::selectionChanged, this,
             [this, onSel](std::optional<uv::Selection> s) { onSel(processedView_, s); });
@@ -1005,6 +1010,7 @@ void MainWindow::updatePlayhead() {
                                         : std::nullopt;
     // The playhead shows on the view of whichever version is being heard; the
     // added-only audition is part of the processed version.
+    waveView_->setPlayhead(t);
     sourceView_->setPlayhead(playing_ == Playing::Original ? t : std::nullopt);
     processedView_->setPlayhead(playing_ == Playing::Processed || playing_ == Playing::Added ? t
                                                                                            : std::nullopt);
@@ -1035,6 +1041,7 @@ void MainWindow::refreshView() {
         processedView_->setTitle(QStringLiteral("Processed"));
         sourceView_->setCutoffMarker(std::nullopt);
         processedView_->setCutoffMarker(std::nullopt);
+        waveView_->setBuffers(nullptr, nullptr, 0);
         infoLabel_->setText(entries_.empty() ? QStringLiteral("Add or drop audio files to begin.")
                                              : QStringLiteral("Select one file to preview it."));
         return;
@@ -1101,6 +1108,7 @@ void MainWindow::refreshView() {
         e->info->cutoffHz < e->sourceCurve->sampleRate * 0.5 * 0.99) {
         cutoff = e->info->cutoffHz;
     }
+    waveView_->setBuffers(e->source, pv ? e->processed : nullptr, e->sourceBitDepth);
     if (cutoffCheck_->isChecked()) cutoff = cutoffSlider_->value() * 100.0;
     sourceView_->setCutoffMarker(cutoff);
     processedView_->setCutoffMarker(cutoff);

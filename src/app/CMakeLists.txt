@@ -12,6 +12,8 @@ qt_add_executable(uvapp WIN32
     SpectrumPlot.h
     SpectrogramView.cpp
     SpectrogramView.h
+    WaveformView.cpp
+    WaveformView.h
     AudioPlayer.cpp
     AudioPlayer.h
     resources.qrc
