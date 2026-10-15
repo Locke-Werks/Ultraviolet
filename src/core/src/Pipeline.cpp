@@ -17,7 +17,7 @@ bool wantsSynthesis(const PipelineSettings& s, const SpectrumInfo& info) {
     switch (s.mode) {
         case PipelineSettings::Mode::Mastering: return false;
         case PipelineSettings::Mode::Rescue:    return true;
-        case PipelineSettings::Mode::Auto:      return info.rolledOff;
+        case PipelineSettings::Mode::Auto:      return info.rolledOff || s.cutoffOverrideHz > 0.0;
     }
     return false;
 }
@@ -66,6 +66,10 @@ AudioBuffer processBuffer(const AudioBuffer& input, const PipelineSettings& sett
         HfParams hp;
         hp.strength = settings.hfStrength;
         hp.cutoffHz = info.cutoffHz;
+        if (settings.cutoffOverrideHz > 0.0) {
+            hp.cutoffHz = settings.cutoffOverrideHz;
+            if (settings.cutoffOverrideHz < info.cutoffHz) hp.preserveBelowHz = info.cutoffHz;
+        }
         hp.sourceNyquistHz = 0.5 * input.sampleRate;
         hp.ultrasonic = settings.ultrasonic;
         hp.rolloff = settings.rolloff;

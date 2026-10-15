@@ -11,6 +11,7 @@ add_executable(uvtests
     test_processing.cpp
     test_spectrogram.cpp
     test_audition.cpp
+    test_selection.cpp
 )
 
 target_link_libraries(uvtests PRIVATE

@@ -20,6 +20,9 @@ struct PipelineSettings {
     double hfStrength = 0.5; // used in Rescue/Auto-rescue
     bool ultrasonic = false; // continue the HF rolloff past 20 kHz into the ultrasonic
     double rolloff = 0.5;    // 0 gentle .. 1 steep extra decay above the source cutoff
+    // > 0 replaces the detected cutoff. Below the real cutoff the extension is
+    // added over the original, which thickens the upper audible band.
+    double cutoffOverrideHz = 0.0;
 };
 
 // Progress + cancellation sink implemented by callers (e.g. the GUI worker).

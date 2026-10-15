@@ -1,6 +1,7 @@
 #pragma once
 
 #include "uvcore/Pipeline.h"
+#include "uvcore/Selection.h"
 #include "uvcore/SpectralAnalyzer.h"
 
 #include <QMainWindow>
@@ -126,6 +127,13 @@ private:
     // Slowed auditions run longer than the file; divide the play position by
     // this to place the playhead on the processed spectrogram.
     double playheadScale_ = 1.0;
+    // A time selection plays from its start, so the playhead adds this back.
+    double playOffsetSeconds_ = 0.0;
+    std::optional<uv::Selection> selection_;
+    int selectionPlayToken_ = 0;
+    QComboBox* selectModeCombo_ = nullptr;
+    void playWithSelection(std::shared_ptr<const uv::AudioBuffer> buf, Playing which, double freqDiv,
+                           double timeScale, const QString& label);
 
     // The isolated, shifted, normalized extension for the selected preview,
     // cached so replaying the same mode is instant. Keyed so a new Apply or
@@ -148,6 +156,9 @@ private:
     QSlider* rolloffSlider_ = nullptr;
     QLabel* rolloffValueLabel_ = nullptr;
     QCheckBox* ultrasonicCheck_ = nullptr;
+    QCheckBox* cutoffCheck_ = nullptr;
+    QSlider* cutoffSlider_ = nullptr;
+    QLabel* cutoffValueLabel_ = nullptr;
     QLineEdit* outputFolderEdit_ = nullptr;
     QPushButton* addButton_ = nullptr;
     QPushButton* removeButton_ = nullptr;

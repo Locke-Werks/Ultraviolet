@@ -56,7 +56,7 @@ bool isSupportedAudio(const QString& path) {
 bool sameSettings(const uv::PipelineSettings& a, const uv::PipelineSettings& b) {
     return a.targetRate == b.targetRate && a.outputFormat == b.outputFormat &&
            a.mode == b.mode && a.hfStrength == b.hfStrength && a.ultrasonic == b.ultrasonic &&
-           a.rolloff == b.rolloff;
+           a.rolloff == b.rolloff && a.cutoffOverrideHz == b.cutoffOverrideHz;
 }
 
 QString kHz(double hz) {
@@ -230,6 +230,29 @@ void MainWindow::buildUi() {
     auditionCombo_->setToolTip(QStringLiteral(
         "Octave shifts keep the song's timing. Slowed modes are exact but run longer."));
 
+    selectModeCombo_ = new QComboBox(viewPane);
+    selectModeCombo_->addItem(QStringLiteral("Select time"), static_cast<int>(SpectrogramView::SelectionMode::Time));
+    selectModeCombo_->addItem(QStringLiteral("Select frequency"),
+                              static_cast<int>(SpectrogramView::SelectionMode::Frequency));
+    selectModeCombo_->addItem(QStringLiteral("Select box"), static_cast<int>(SpectrogramView::SelectionMode::Box));
+    selectModeCombo_->setToolTip(QStringLiteral(
+        "Drag on a spectrogram to select. Playback is limited to the selection. Click or Esc clears it."));
+    connect(selectModeCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        const auto m = static_cast<SpectrogramView::SelectionMode>(selectModeCombo_->currentData().toInt());
+        sourceView_->setSelectionMode(m);
+        processedView_->setSelectionMode(m);
+    });
+    // Both views show one selection; setSelection does not re-emit, so no loop.
+    auto onSel = [this](SpectrogramView* other, std::optional<uv::Selection> s) {
+        selection_ = s;
+        other->setSelection(s);
+    };
+    connect(sourceView_, &SpectrogramView::selectionChanged, this,
+            [this, onSel](std::optional<uv::Selection> s) { onSel(processedView_, s); });
+    connect(processedView_, &SpectrogramView::selectionChanged, this,
+            [this, onSel](std::optional<uv::Selection> s) { onSel(sourceView_, s); });
+    transport->addWidget(selectModeCombo_);
+
     transport->addWidget(playOriginalButton_);
     transport->addWidget(playProcessedButton_);
     transport->addWidget(playAddedButton_);
@@ -313,6 +336,25 @@ void MainWindow::buildUi() {
     rolloffSlider_->setToolTip(QStringLiteral("How fast the extension decays above the source cutoff."));
     form->addWidget(rolloffSlider_);
 
+    auto* cutoffRow = new QHBoxLayout();
+    cutoffCheck_ = new QCheckBox(QStringLiteral("Manual cutoff"), settings);
+    cutoffCheck_->setToolTip(QStringLiteral(
+        "Start the extension here instead of at the detected cutoff. Below the real cutoff it is "
+        "added over the original, which thickens the upper band."));
+    cutoffValueLabel_ = new QLabel(QStringLiteral("auto"), settings);
+    cutoffValueLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    cutoffRow->addWidget(cutoffCheck_);
+    cutoffRow->addStretch(1);
+    cutoffRow->addWidget(cutoffValueLabel_);
+    form->addLayout(cutoffRow);
+
+    // 100 Hz steps from 2 to 24 kHz.
+    cutoffSlider_ = new QSlider(Qt::Horizontal, settings);
+    cutoffSlider_->setRange(20, 240);
+    cutoffSlider_->setValue(160);
+    cutoffSlider_->setEnabled(false);
+    form->addWidget(cutoffSlider_);
+
     ultrasonicCheck_ = new QCheckBox(QStringLiteral("Extend into ultrasonic (fades out by 48 kHz)"), settings);
     ultrasonicCheck_->setChecked(true);
     form->addWidget(ultrasonicCheck_);
@@ -371,6 +413,24 @@ void MainWindow::buildUi() {
     });
     connect(rolloffSlider_, &QSlider::valueChanged, this, &MainWindow::onSettingsChanged);
     connect(ultrasonicCheck_, &QCheckBox::toggled, this, &MainWindow::onSettingsChanged);
+    auto updateCutoffLabel = [this] {
+        cutoffValueLabel_->setText(cutoffCheck_->isChecked() ? kHz(cutoffSlider_->value() * 100.0)
+                                                             : QStringLiteral("auto"));
+    };
+    connect(cutoffCheck_, &QCheckBox::toggled, this, [this, updateCutoffLabel](bool on) {
+        // Start from the detected value so turning it on changes nothing by itself.
+        if (on) {
+            if (Entry* e = selectedEntry(); e && e->info)
+                cutoffSlider_->setValue(static_cast<int>(std::lround(e->info->cutoffHz / 100.0)));
+        }
+        updateCutoffLabel();
+        refreshControls();
+        onSettingsChanged();
+    });
+    connect(cutoffSlider_, &QSlider::valueChanged, this, [this, updateCutoffLabel](int) {
+        updateCutoffLabel();
+        onSettingsChanged();
+    });
 }
 
 // ---- Queue -----------------------------------------------------------------
@@ -463,6 +523,7 @@ uv::PipelineSettings MainWindow::currentSettings() const {
     s.hfStrength = hfSlider_->value() / 100.0;
     s.rolloff = rolloffSlider_->value() / 100.0;
     s.ultrasonic = ultrasonicCheck_->isChecked();
+    if (cutoffCheck_->isChecked()) s.cutoffOverrideHz = cutoffSlider_->value() * 100.0;
     return s;
 }
 
@@ -498,6 +559,10 @@ void MainWindow::setRowProgress(int id, int percent) {
 
 void MainWindow::onSelectionChanged() {
     player_->stop();
+    // A selection belongs to the file it was drawn on.
+    selection_.reset();
+    sourceView_->setSelection(std::nullopt);
+    processedView_->setSelection(std::nullopt);
     // Up to a full-length buffer at the target rate; only worth keeping while
     // its file stays selected.
     auditionBuf_.reset();
@@ -801,28 +866,54 @@ void MainWindow::onCancel() {
 
 void MainWindow::onPlayOriginal() {
     Entry* e = selectedEntry();
-    if (e && e->source) {
-        hintLabel_->setText(QStringLiteral("Playing original"));
-        player_->play(*e->source);
-        if (player_->isPlaying()) {
-            playing_ = Playing::Original;
-            playheadScale_ = 1.0;
-            playheadTimer_->start();
-        }
-    }
+    if (e && e->source) playWithSelection(e->source, Playing::Original, 1, 1.0, QStringLiteral("Playing original"));
 }
 
 void MainWindow::onPlayProcessed() {
     Entry* e = selectedEntry();
-    if (e && e->processed && previewValid(*e)) {
-        hintLabel_->setText(QStringLiteral("Playing processed"));
-        player_->play(*e->processed);
+    if (e && e->processed && previewValid(*e))
+        playWithSelection(e->processed, Playing::Processed, 1, 1.0, QStringLiteral("Playing processed"));
+}
+
+void MainWindow::playWithSelection(std::shared_ptr<const uv::AudioBuffer> buf, Playing which, double freqDiv,
+                                   double timeScale, const QString& label) {
+    auto start = [this, which, timeScale, label](const uv::AudioBuffer& b, double offset, bool filtered) {
+        hintLabel_->setText(filtered ? label + QStringLiteral(" (selection)") : label);
+        player_->play(b);
         if (player_->isPlaying()) {
-            playing_ = Playing::Processed;
-            playheadScale_ = 1.0;
+            playing_ = which;
+            playheadScale_ = timeScale;
+            playOffsetSeconds_ = offset;
             playheadTimer_->start();
         }
+        refreshControls();
+    };
+    if (!selection_) {
+        start(*buf, 0.0, false);
+        return;
     }
+    // Selections are drawn in file time and file frequency; an audition that
+    // was slowed or shifted plays them at scaled positions.
+    uv::Selection s = *selection_;
+    s.t0 *= timeScale;
+    s.t1 *= timeScale;
+    s.f0 /= freqDiv;
+    s.f1 /= freqDiv;
+    const double offset = selection_->hasTime ? std::min(selection_->t0, selection_->t1) : 0.0;
+
+    player_->stop();
+    hintLabel_->setText(QStringLiteral("Filtering selection..."));
+    const int token = ++selectionPlayToken_;
+    auto* watcher = new QFutureWatcher<std::shared_ptr<const uv::AudioBuffer>>(this);
+    connect(watcher, &QFutureWatcher<std::shared_ptr<const uv::AudioBuffer>>::finished, this,
+            [this, watcher, token, offset, start] {
+                watcher->deleteLater();
+                if (token != selectionPlayToken_) return; // superseded by a newer press
+                start(*watcher->result(), offset, true);
+            });
+    watcher->setFuture(QtConcurrent::run([buf, s] {
+        return std::make_shared<const uv::AudioBuffer>(uv::extractSelection(*buf, s));
+    }));
 }
 
 namespace {
@@ -850,15 +941,10 @@ void MainWindow::onPlayAdded() {
 
     auto start = [this, mode] {
         const QString gain = QString::number(auditionGainDb_, 'f', 0);
-        hintLabel_->setText(QStringLiteral("Playing added content only (%1, +%2 dB to normalize)")
-                                .arg(auditionLabel(mode), gain));
-        player_->play(*auditionBuf_);
-        if (player_->isPlaying()) {
-            playing_ = Playing::Added;
-            playheadScale_ = auditionTimeScale(mode);
-            playheadTimer_->start();
-        }
-        refreshControls();
+        const double freqDiv = mode == 1 ? 2.0 : mode == 2 ? 4.0 : auditionTimeScale(mode);
+        playWithSelection(auditionBuf_, Playing::Added, freqDiv, auditionTimeScale(mode),
+                          QStringLiteral("Playing added content only (%1, +%2 dB to normalize)")
+                              .arg(auditionLabel(mode), gain));
     };
 
     if (auditionBuf_ && auditionId_ == id && auditionToken_ == token && auditionMode_ == mode) {
@@ -914,7 +1000,8 @@ void MainWindow::onPlayAdded() {
 
 void MainWindow::updatePlayhead() {
     const std::optional<double> t = player_->isPlaying()
-                                        ? std::optional<double>(player_->positionSeconds() / playheadScale_)
+                                        ? std::optional<double>(player_->positionSeconds() / playheadScale_ +
+                                                                playOffsetSeconds_)
                                         : std::nullopt;
     // The playhead shows on the view of whichever version is being heard; the
     // added-only audition is part of the processed version.
@@ -1014,6 +1101,7 @@ void MainWindow::refreshView() {
         e->info->cutoffHz < e->sourceCurve->sampleRate * 0.5 * 0.99) {
         cutoff = e->info->cutoffHz;
     }
+    if (cutoffCheck_->isChecked()) cutoff = cutoffSlider_->value() * 100.0;
     sourceView_->setCutoffMarker(cutoff);
     processedView_->setCutoffMarker(cutoff);
 
@@ -1045,9 +1133,10 @@ void MainWindow::refreshControls() {
     for (QWidget* w : {static_cast<QWidget*>(rateCombo_), static_cast<QWidget*>(formatCombo_),
                        static_cast<QWidget*>(modeCombo_), static_cast<QWidget*>(hfSlider_),
                        static_cast<QWidget*>(rolloffSlider_),
-                       static_cast<QWidget*>(ultrasonicCheck_)}) {
+                       static_cast<QWidget*>(ultrasonicCheck_), static_cast<QWidget*>(cutoffCheck_)}) {
         w->setEnabled(!busy_);
     }
+    cutoffSlider_->setEnabled(!busy_ && cutoffCheck_->isChecked());
 }
 
 void MainWindow::setBusy(bool busy) {

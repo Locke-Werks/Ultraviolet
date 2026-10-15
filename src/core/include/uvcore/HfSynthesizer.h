@@ -12,6 +12,10 @@ struct HfParams {
     double sourceNyquistHz = 0.0; // nothing above this survives resampling, so content above it must be synthesized
     bool ultrasonic = false;      // continue the rolloff past 20 kHz into the ultrasonic
     double rolloff = 0.5;         // 0 gentle .. 1 steep extra decay above the cutoff
+    // When the user forces a cutoff below the source's real one, the original
+    // between the two is real music: keep it and add the extension on top
+    // rather than replacing it. 0 = replace everything above cutoffHz.
+    double preserveBelowHz = 0.0;
 };
 
 // High-frequency extension, applied once at the target rate after resampling.

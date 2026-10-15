@@ -149,6 +149,30 @@ TEST_CASE("addedComponent isolates the Rescue extension", "[audition]") {
     REQUIRE(db > 60.0);
 }
 
+TEST_CASE("a manual cutoff below the real one adds over the original", "[audition][cutoff]") {
+    const uv::AudioBuffer src = bandLimitedSource();
+    uv::PipelineSettings s;
+    s.targetRate = 192000.0;
+    s.mode = uv::PipelineSettings::Mode::Auto;
+    s.hfStrength = 1.0;
+    s.ultrasonic = true;
+    s.cutoffOverrideHz = 8000.0;
+    const uv::AudioBuffer proc = uv::processBuffer(src, s);
+    const uv::AudioBuffer plain = uv::resample(src, 192000.0);
+    const auto a = slice(proc.channels[0], 72000, 48000);
+    const auto b = slice(plain.channels[0], 72000, 48000);
+    // The 12 kHz tone sits between the manual and real cutoffs and must survive.
+    const double tone = 10.0 * std::log10(power(a, 192000.0, 12000.0) / power(b, 192000.0, 12000.0));
+    const uv::AudioBuffer added = uv::addedComponent(proc, src);
+    const auto c = slice(added.channels[0], 72000, 48000);
+    const double addedBand = bandEnergy(c, 192000.0, 9000.0, 14000.0);
+    const double addedLow = bandEnergy(c, 192000.0, 200.0, 7000.0);
+    std::printf("[audition] manual cutoff: 12 kHz tone %+.2f dB, added 9-14k over <7k %.1f dB\n", tone,
+                10.0 * std::log10(addedBand / std::max(addedLow, 1e-300)));
+    REQUIRE(tone > -1.0);
+    REQUIRE(addedBand > 100.0 * addedLow);
+}
+
 TEST_CASE("pitchShiftDown moves a sine down by octaves", "[audition]") {
     struct Case {
         double f;

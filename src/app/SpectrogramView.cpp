@@ -1,5 +1,6 @@
 #include "SpectrogramView.h"
 
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
 
@@ -87,6 +88,93 @@ bool valid(const uv::Spectrogram& s) {
 SpectrogramView::SpectrogramView(QWidget* parent) : QWidget(parent) {
     setMouseTracking(true);
     setAttribute(Qt::WA_OpaquePaintEvent);
+    // Click focus so Esc reaches the view that was just used to select.
+    setFocusPolicy(Qt::ClickFocus);
+}
+
+void SpectrogramView::setSelectionMode(SelectionMode mode) {
+    selMode_ = mode;
+    dragStart_.reset();
+    dragging_ = false;
+    update();
+}
+
+void SpectrogramView::setSelection(const std::optional<uv::Selection>& sel) {
+    selection_ = sel;
+    update();
+}
+
+void SpectrogramView::clearSelection() {
+    const bool had = selection_.has_value();
+    selection_.reset();
+    update();
+    if (had) emit selectionChanged(std::nullopt);
+}
+
+double SpectrogramView::durationSeconds() const {
+    return (data_ && valid(*data_)) ? data_->durationSeconds : 0.0;
+}
+
+double SpectrogramView::xToTime(double x, const QRectF& r) const {
+    return std::clamp((x - r.left()) / r.width(), 0.0, 1.0) * durationSeconds();
+}
+
+double SpectrogramView::timeToX(double t, const QRectF& r) const {
+    const double dur = durationSeconds();
+    return dur > 0 ? r.left() + t / dur * r.width() : r.left();
+}
+
+uv::Selection SpectrogramView::selectionFromDrag(QPointF a, QPointF b) const {
+    const QRectF r = plotRect();
+    uv::Selection s;
+    if (selMode_ != SelectionMode::Frequency) {
+        s.hasTime = true;
+        s.t0 = xToTime(std::min(a.x(), b.x()), r);
+        s.t1 = xToTime(std::max(a.x(), b.x()), r);
+    }
+    if (selMode_ != SelectionMode::Time) {
+        s.hasFreq = true;
+        // Higher y is lower frequency; clamp to the drawn axis range.
+        const double yTop = std::clamp(std::min(a.y(), b.y()), r.top(), r.bottom());
+        const double yBot = std::clamp(std::max(a.y(), b.y()), r.top(), r.bottom());
+        s.f0 = yToFreq(yBot, r);
+        s.f1 = std::min(yToFreq(yTop, r), displayMaxHz_);
+    }
+    return s;
+}
+
+void SpectrogramView::mousePressEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton && plotRect().contains(event->position()) && durationSeconds() > 0) {
+        dragStart_ = event->position();
+        dragging_ = false;
+        event->accept();
+        return;
+    }
+    QWidget::mousePressEvent(event);
+}
+
+void SpectrogramView::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() != Qt::LeftButton || !dragStart_) {
+        QWidget::mouseReleaseEvent(event);
+        return;
+    }
+    const bool wasDrag = dragging_;
+    dragStart_.reset();
+    dragging_ = false;
+    if (wasDrag) emit selectionChanged(selection_);
+    else clearSelection(); // a click without a drag deselects, as in RX
+    event->accept();
+}
+
+void SpectrogramView::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Escape) {
+        dragStart_.reset();
+        dragging_ = false;
+        clearSelection();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 void SpectrogramView::setTitle(const QString& title) { title_ = title; update(); }
@@ -196,6 +284,11 @@ void SpectrogramView::mouseMoveEvent(QMouseEvent* event) {
     const QPointF pos = event->position();
     if (plotRect().contains(pos)) hover_ = pos;
     else hover_.reset();
+    if (dragStart_ && (event->buttons() & Qt::LeftButton)) {
+        // A few pixels of slop so a shaky click still counts as a click.
+        if (!dragging_ && (pos - *dragStart_).manhattanLength() >= 4) dragging_ = true;
+        if (dragging_) selection_ = selectionFromDrag(*dragStart_, pos);
+    }
     update();
 }
 
@@ -299,6 +392,24 @@ void SpectrogramView::paintEvent(QPaintEvent*) {
         p.fillRect(lr, QColor(13, 11, 20, 200));
         p.setPen(kMarkerColor);
         p.drawText(QPointF(lr.left() + 2, lr.top() + fm.ascent()), lbl);
+    }
+
+    if (selection_ && (selection_->hasTime || selection_->hasFreq)) {
+        const uv::Selection& s = *selection_;
+        double x0 = r.left(), x1 = r.right(), y0 = r.top(), y1 = r.bottom();
+        if (s.hasTime && dur > 0) {
+            x0 = std::clamp(timeToX(std::min(s.t0, s.t1), r), r.left(), r.right());
+            x1 = std::clamp(timeToX(std::max(s.t0, s.t1), r), r.left(), r.right());
+        }
+        if (s.hasFreq) {
+            y0 = std::clamp(freqToY(std::max(s.f0, s.f1), r), r.top(), r.bottom());
+            y1 = std::clamp(freqToY(std::min(s.f0, s.f1), r), r.top(), r.bottom());
+        }
+        const QRectF sr(QPointF(x0, y0), QPointF(x1, y1));
+        p.setPen(QPen(QColor(120, 200, 255, 220), 1.0));
+        p.setBrush(QColor(120, 200, 255, 50));
+        p.drawRect(sr);
+        p.setBrush(Qt::NoBrush);
     }
 
     if (playhead_ && dur > 0 && *playhead_ >= 0 && *playhead_ <= dur) {

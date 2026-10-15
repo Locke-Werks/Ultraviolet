@@ -1,5 +1,6 @@
 #pragma once
 
+#include "uvcore/Selection.h"
 #include "uvcore/SpectralAnalyzer.h"
 
 #include <QImage>
@@ -37,15 +38,44 @@ public:
     // Vertical playhead in seconds; nullopt hides it.
     void setPlayhead(std::optional<double> seconds);
 
+    // RX style selection tool. Time selects a full-height column, Frequency a
+    // full-width band, Box a rectangle.
+    enum class SelectionMode { Time, Frequency, Box };
+    void setSelectionMode(SelectionMode mode);
+    SelectionMode selectionMode() const { return selMode_; }
+
+    // Sets the selection without emitting selectionChanged, so two views can
+    // mirror each other without a feedback loop.
+    void setSelection(const std::optional<uv::Selection>& sel);
+    const std::optional<uv::Selection>& selection() const { return selection_; }
+    void clearSelection(); // emits selectionChanged(nullopt) if one existed
+
     QSize minimumSizeHint() const override;
+
+signals:
+    // Emitted on user edits only: drag release, single click, Esc.
+    void selectionChanged(std::optional<uv::Selection> selection);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
     void leaveEvent(QEvent* event) override;
 
 private:
+    double xToTime(double x, const QRectF& r) const;
+    double timeToX(double t, const QRectF& r) const;
+    double durationSeconds() const;
+    uv::Selection selectionFromDrag(QPointF a, QPointF b) const;
+
+    SelectionMode selMode_ = SelectionMode::Time;
+    std::optional<uv::Selection> selection_;
+    std::optional<QPointF> dragStart_;
+    bool dragging_ = false;
+
     QRectF plotRect() const;
     double freqToY(double hz, const QRectF& r) const;
     double yToFreq(double y, const QRectF& r) const;

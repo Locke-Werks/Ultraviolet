@@ -115,6 +115,8 @@ void AlgorithmicHfSynthesizer::extend(AudioBuffer& buffer, const HfParams& param
     const double df = sr / N;
 
     const double D = std::max(200.0, 0.04 * fc);
+    const double preserveHz = std::min(params.preserveBelowHz, 0.97 * srcNyq);
+    const double Dp = std::max(200.0, 0.04 * preserveHz);
     const int kc = static_cast<int>(std::lround(fc / df));
     const int k0 = std::max(2, static_cast<int>(std::lround((fc - D) / df)));
     const int B = std::max(1, static_cast<int>(std::lround(0.5 * fc / df)));
@@ -232,6 +234,14 @@ void AlgorithmicHfSynthesizer::extend(AudioBuffer& buffer, const HfParams& param
         const double w = f >= fc ? 1.0 : (f <= fLo ? 0.0 : 0.5 - 0.5 * std::cos(kPi * (f - fLo) / D));
         keep[k] = std::cos(0.5 * kPi * w);
         take[k] = std::sin(0.5 * kPi * w);
+        if (preserveHz > fc) {
+            // Original stays at full level up to the real cutoff, then hands
+            // over with the same power-complementary ramp.
+            const double pLo = preserveHz - Dp;
+            const double wp = f >= preserveHz ? 1.0 : (f <= pLo ? 0.0 : 0.5 - 0.5 * std::cos(kPi * (f - pLo) / Dp));
+            keep[k] = std::cos(0.5 * kPi * wp);
+            if (f >= fc) take[k] = 1.0;
+        }
     }
     // Above the fade the original is also cleared, which removes only
     // resampler residue: by definition nothing above fc is on the source's trend.
