@@ -23,4 +23,8 @@ struct AudioBuffer {
     bool empty() const { return frames() == 0; }
 };
 
+// Upsampler filter phase. Linear phase rings symmetrically, so every transient
+// gets pre-ringing ahead of it; minimum phase moves all ringing after the onset.
+enum class FilterPhase { Linear, Minimum };
+
 } // namespace uv

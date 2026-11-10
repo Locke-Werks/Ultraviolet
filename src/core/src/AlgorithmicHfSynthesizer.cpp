@@ -95,7 +95,9 @@ int chooseFftSize(double sampleRate) {
 
 } // namespace
 
-void AlgorithmicHfSynthesizer::extend(AudioBuffer& buffer, const HfParams& params) {
+void AlgorithmicHfSynthesizer::extend(AudioBuffer& buffer, const HfParams& params,
+                                      std::vector<std::vector<Sample>>* added) {
+    if (added) added->clear();
     const double sr = buffer.sampleRate;
     if (params.strength <= 0.0 || sr <= 0.0 || buffer.empty()) return;
 
@@ -343,6 +345,10 @@ void AlgorithmicHfSynthesizer::extend(AudioBuffer& buffer, const HfParams& param
         }
 
         for (long long i = 0; i < len; ++i) x[static_cast<std::size_t>(i)] += corr[static_cast<std::size_t>(i)];
+        if (added) {
+            added->resize(static_cast<std::size_t>(chCount));
+            (*added)[static_cast<std::size_t>(ch)] = corr;
+        }
     }
 }
 

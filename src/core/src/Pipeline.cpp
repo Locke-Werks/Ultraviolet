@@ -2,9 +2,13 @@
 
 #include "uvcore/AirShelf.h"
 #include "uvcore/Dither.h"
+#include "uvcore/Exciter.h"
 #include "uvcore/HfSynthesizer.h"
 #include "uvcore/Resampler.h"
 #include "uvcore/SpectralAnalyzer.h"
+#include "uvcore/TransientShaper.h"
+
+#include <algorithm>
 
 namespace uv {
 
@@ -56,26 +60,61 @@ AudioBuffer processBuffer(const AudioBuffer& input, const PipelineSettings& sett
     report(progress, 0.15);
 
     AudioBuffer buf = input.sampleRate != settings.targetRate
-                          ? resample(input, settings.targetRate)
+                          ? resample(input, settings.targetRate, settings.filterPhase)
                           : input;
     if (isCancelled(progress)) return {};
     report(progress, 0.5);
+
+    // Cutoff the extension and exciter both work from: detected, or the
+    // user's override.
+    double cutoffHz = info.cutoffHz;
+    double preserveBelowHz = 0.0;
+    if (settings.cutoffOverrideHz > 0.0) {
+        cutoffHz = settings.cutoffOverrideHz;
+        if (settings.cutoffOverrideHz < info.cutoffHz) preserveBelowHz = info.cutoffHz;
+    }
+    const double srcNyq = 0.5 * input.sampleRate;
+
+    // Everything added above the source band, kept separately so the
+    // transient shaper can ride it without touching the original.
+    std::vector<std::vector<Sample>> added;
+    const TransientParams tp{settings.transientAttack, settings.transientSustain};
+    const bool shaping = transientShaperActive(tp);
 
     // Extension runs at the target rate so it can continue the spectrum past
     // the source Nyquist in one smooth curve instead of stopping at it.
     if (synthesize) {
         HfParams hp;
         hp.strength = settings.hfStrength;
-        hp.cutoffHz = info.cutoffHz;
-        if (settings.cutoffOverrideHz > 0.0) {
-            hp.cutoffHz = settings.cutoffOverrideHz;
-            if (settings.cutoffOverrideHz < info.cutoffHz) hp.preserveBelowHz = info.cutoffHz;
-        }
-        hp.sourceNyquistHz = 0.5 * input.sampleRate;
+        hp.cutoffHz = cutoffHz;
+        hp.preserveBelowHz = preserveBelowHz;
+        hp.sourceNyquistHz = srcNyq;
         hp.ultrasonic = settings.ultrasonic;
         hp.rolloff = settings.rolloff;
-        makeAlgorithmicHfSynthesizer()->extend(buf, hp);
+        makeAlgorithmicHfSynthesizer()->extend(buf, hp, shaping ? &added : nullptr);
     }
+    if (isCancelled(progress)) return {};
+    report(progress, 0.65);
+
+    if (settings.exciterAmount > 0.0) {
+        ExciterParams ep;
+        ep.amount = settings.exciterAmount;
+        ep.cutoffHz = cutoffHz > 0.0 ? std::min(cutoffHz, 0.97 * srcNyq) : 0.97 * srcNyq;
+        auto ex = exciterSignal(buf, ep);
+        if (!ex.empty()) {
+            if (added.empty()) added.assign(buf.channels.size(), std::vector<Sample>(buf.frames(), 0.0));
+            for (std::size_t ch = 0; ch < buf.channels.size(); ++ch) {
+                for (std::size_t i = 0; i < buf.frames(); ++i) {
+                    buf.channels[ch][i] += ex[ch][i];
+                    added[ch][i] += ex[ch][i];
+                }
+            }
+        }
+    }
+    if (isCancelled(progress)) return {};
+    report(progress, 0.75);
+
+    applyTransientShaper(buf, added, tp);
     if (isCancelled(progress)) return {};
     // After the extension, so the shelf lifts the synthesized band with the
     // rest of the top end, the way a mastering EQ after the upsampler would.

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(Ultraviolet
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Audio upscaler"
     LANGUAGES CXX)
 

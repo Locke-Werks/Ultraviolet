@@ -162,6 +162,13 @@ private:
     QCheckBox* airCheck_ = nullptr;
     QSlider* airSlider_ = nullptr;
     QLabel* airValueLabel_ = nullptr;
+    QComboBox* phaseCombo_ = nullptr;
+    QSlider* exciterSlider_ = nullptr;
+    QLabel* exciterValueLabel_ = nullptr;
+    QSlider* attackSlider_ = nullptr;
+    QLabel* attackValueLabel_ = nullptr;
+    QSlider* sustainSlider_ = nullptr;
+    QLabel* sustainValueLabel_ = nullptr;
     QSlider* cutoffSlider_ = nullptr;
     QLabel* cutoffValueLabel_ = nullptr;
     QLineEdit* outputFolderEdit_ = nullptr;

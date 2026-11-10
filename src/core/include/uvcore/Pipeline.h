@@ -26,6 +26,16 @@ struct PipelineSettings {
     // Air shelf gain at 20 kHz in dB, 0 = off. A deliberate change to the
     // audible band, so it applies in every mode, Mastering included.
     double airDb = 0.0;
+
+    // Upsampler phase. Minimum phase removes pre-ringing ahead of transients.
+    FilterPhase filterPhase = FilterPhase::Linear;
+    // Harmonic exciter above the cutoff, 0 = off. Like the air shelf it is an
+    // explicit choice, so it applies in every mode.
+    double exciterAmount = 0.0;
+    // Transient shaper on the synthesized band (extension plus exciter),
+    // -1..+1 each, both 0 = off.
+    double transientAttack = 0.0;
+    double transientSustain = 0.0;
 };
 
 // Progress + cancellation sink implemented by callers (e.g. the GUI worker).

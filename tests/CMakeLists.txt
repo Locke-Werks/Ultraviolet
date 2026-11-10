@@ -13,6 +13,7 @@ add_executable(uvtests
     test_audition.cpp
     test_selection.cpp
     test_airshelf.cpp
+    test_transients.cpp
 )
 
 target_link_libraries(uvtests PRIVATE

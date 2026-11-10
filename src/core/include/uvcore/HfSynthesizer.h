@@ -3,6 +3,7 @@
 #include "uvcore/Types.h"
 
 #include <memory>
+#include <vector>
 
 namespace uv {
 
@@ -26,15 +27,20 @@ class HfSynthesizer {
 public:
     virtual ~HfSynthesizer() = default;
 
-    // Modifies the buffer in place. strength <= 0 leaves it bit-exact.
-    virtual void extend(AudioBuffer& targetRateBuffer, const HfParams& params) = 0;
+    // Modifies the buffer in place. strength <= 0 leaves it bit-exact. When
+    // added is non-null it receives, per channel, exactly the signal that was
+    // added to the buffer (empty if nothing was), so later stages can treat
+    // the synthesized band on its own.
+    virtual void extend(AudioBuffer& targetRateBuffer, const HfParams& params,
+                        std::vector<std::vector<Sample>>* added = nullptr) = 0;
 };
 
 // Deterministic DSP implementation: STFT spectral band replication shaped by a
 // level-tracking decay envelope.
 class AlgorithmicHfSynthesizer : public HfSynthesizer {
 public:
-    void extend(AudioBuffer& targetRateBuffer, const HfParams& params) override;
+    void extend(AudioBuffer& targetRateBuffer, const HfParams& params,
+                std::vector<std::vector<Sample>>* added = nullptr) override;
 };
 
 std::unique_ptr<HfSynthesizer> makeAlgorithmicHfSynthesizer();

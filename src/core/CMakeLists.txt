@@ -11,6 +11,8 @@ add_library(uvcore STATIC
     src/Audition.cpp
     src/Selection.cpp
     src/AirShelf.cpp
+    src/Exciter.cpp
+    src/TransientShaper.cpp
 )
 
 target_include_directories(uvcore PUBLIC include)

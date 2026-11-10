@@ -5,7 +5,7 @@
 
 [product]
 name         = "Ultraviolet"
-version      = "0.1.0"
+version      = "0.2.0"
 publisher    = "Locke Werks"
 description  = "Audio upscaler: 384 kHz / 64-bit conversion with high-frequency extension"
 copyright    = "Copyright (C) 2026 Locke Werks"

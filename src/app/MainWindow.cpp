@@ -57,7 +57,9 @@ bool isSupportedAudio(const QString& path) {
 bool sameSettings(const uv::PipelineSettings& a, const uv::PipelineSettings& b) {
     return a.targetRate == b.targetRate && a.outputFormat == b.outputFormat &&
            a.mode == b.mode && a.hfStrength == b.hfStrength && a.ultrasonic == b.ultrasonic &&
-           a.rolloff == b.rolloff && a.cutoffOverrideHz == b.cutoffOverrideHz && a.airDb == b.airDb;
+           a.rolloff == b.rolloff && a.cutoffOverrideHz == b.cutoffOverrideHz && a.airDb == b.airDb &&
+           a.filterPhase == b.filterPhase && a.exciterAmount == b.exciterAmount &&
+           a.transientAttack == b.transientAttack && a.transientSustain == b.transientSustain;
 }
 
 QString kHz(double hz) {
@@ -384,6 +386,41 @@ void MainWindow::buildUi() {
     form->addWidget(airSlider_);
 
     form->addSpacing(8);
+    form->addWidget(new QLabel(QStringLiteral("Transients"), settings));
+    phaseCombo_ = new QComboBox(settings);
+    phaseCombo_->addItem(QStringLiteral("Linear phase upsampling"), static_cast<int>(uv::FilterPhase::Linear));
+    phaseCombo_->addItem(QStringLiteral("Minimum phase upsampling"), static_cast<int>(uv::FilterPhase::Minimum));
+    phaseCombo_->setToolTip(QStringLiteral(
+        "Linear phase rings before and after every transient. Minimum phase moves all of the "
+        "ringing after the onset, so attacks start clean."));
+    form->addWidget(phaseCombo_);
+
+    auto addSlider = [&](const QString& name, const QString& tip, int lo, QSlider*& slider, QLabel*& label) {
+        auto* row = new QHBoxLayout();
+        row->addWidget(new QLabel(name, settings));
+        label = new QLabel(QStringLiteral("off"), settings);
+        label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        row->addStretch(1);
+        row->addWidget(label);
+        form->addLayout(row);
+        slider = new QSlider(Qt::Horizontal, settings);
+        slider->setRange(lo, 100);
+        slider->setValue(0);
+        slider->setToolTip(tip);
+        form->addWidget(slider);
+    };
+    addSlider(QStringLiteral("Exciter"),
+              QStringLiteral("Harmonics of the top octave, added above the cutoff on the same sample as the "
+                             "transient that made them."),
+              0, exciterSlider_, exciterValueLabel_);
+    addSlider(QStringLiteral("Attack"),
+              QStringLiteral("Gain on the synthesized band at onsets, -12 to +12 dB. The original is untouched."),
+              -100, attackSlider_, attackValueLabel_);
+    addSlider(QStringLiteral("Sustain"),
+              QStringLiteral("Gain on the synthesized band between onsets, -12 to +12 dB."),
+              -100, sustainSlider_, sustainValueLabel_);
+
+    form->addSpacing(8);
     form->addWidget(new QLabel(QStringLiteral("Output folder"), settings));
     auto* outRow = new QHBoxLayout();
     outputFolderEdit_ = new QLineEdit(settings);
@@ -465,6 +502,21 @@ void MainWindow::buildUi() {
         updateAirLabel();
         onSettingsChanged();
     });
+    connect(phaseCombo_, &QComboBox::currentIndexChanged, this, &MainWindow::onSettingsChanged);
+    connect(exciterSlider_, &QSlider::valueChanged, this, [this](int v) {
+        exciterValueLabel_->setText(v == 0 ? QStringLiteral("off") : QString::number(v));
+        onSettingsChanged();
+    });
+    auto bipolar = [this](QSlider* slider, QLabel* label) {
+        connect(slider, &QSlider::valueChanged, this, [this, label](int v) {
+            label->setText(v == 0 ? QStringLiteral("off")
+                                  : QStringLiteral("%1%2 dB").arg(v > 0 ? QStringLiteral("+") : QString())
+                                        .arg(v * 0.12, 0, 'f', 1));
+            onSettingsChanged();
+        });
+    };
+    bipolar(attackSlider_, attackValueLabel_);
+    bipolar(sustainSlider_, sustainValueLabel_);
     connect(cutoffSlider_, &QSlider::valueChanged, this, [this, updateCutoffLabel](int) {
         updateCutoffLabel();
         onSettingsChanged();
@@ -563,6 +615,10 @@ uv::PipelineSettings MainWindow::currentSettings() const {
     s.ultrasonic = ultrasonicCheck_->isChecked();
     if (cutoffCheck_->isChecked()) s.cutoffOverrideHz = cutoffSlider_->value() * 100.0;
     if (airCheck_->isChecked()) s.airDb = airSlider_->value() * 0.5;
+    s.filterPhase = static_cast<uv::FilterPhase>(phaseCombo_->currentData().toInt());
+    s.exciterAmount = exciterSlider_->value() / 100.0;
+    s.transientAttack = attackSlider_->value() / 100.0;
+    s.transientSustain = sustainSlider_->value() / 100.0;
     return s;
 }
 
@@ -1175,7 +1231,9 @@ void MainWindow::refreshControls() {
     for (QWidget* w : {static_cast<QWidget*>(rateCombo_), static_cast<QWidget*>(formatCombo_),
                        static_cast<QWidget*>(modeCombo_), static_cast<QWidget*>(hfSlider_),
                        static_cast<QWidget*>(rolloffSlider_),
-                       static_cast<QWidget*>(ultrasonicCheck_), static_cast<QWidget*>(cutoffCheck_), static_cast<QWidget*>(airCheck_)}) {
+                       static_cast<QWidget*>(ultrasonicCheck_), static_cast<QWidget*>(cutoffCheck_), static_cast<QWidget*>(airCheck_),
+                       static_cast<QWidget*>(phaseCombo_), static_cast<QWidget*>(exciterSlider_),
+                       static_cast<QWidget*>(attackSlider_), static_cast<QWidget*>(sustainSlider_)}) {
         w->setEnabled(!busy_);
     }
     airSlider_->setEnabled(!busy_ && airCheck_->isChecked());
